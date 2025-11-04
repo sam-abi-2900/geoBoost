@@ -1,0 +1,812 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>GeoBoost | AB InBev</title>
+
+<!-- Leaflet -->
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+<!-- Leaflet Draw for rectangle/lasso -->
+<link rel="stylesheet" href="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.css"/>
+<script src="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.js"></script>
+
+<!-- Turf for distance/centroid math -->
+<script src="https://unpkg.com/@turf/turf@6.5.0/turf.min.js"></script>
+
+<!-- XLSX for Excel ingestion -->
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+
+<style>
+:root{
+  --bg:#0b0b0c;
+  --panel:#111114;
+  --panel2:#17181b;
+  --text:#eaeaf0;
+  --muted:#9da3af;
+  --accent:#ffd166
+}
+*{box-sizing:border-box}
+body{
+  margin:0;
+  background:var(--bg);
+  color:var(--text);
+  font-family:Inter,system-ui,Segoe UI,Roboto,Arial,sans-serif
+}
+.app{
+  display:grid;
+  grid-template-columns:360px 1fr;
+  height:100vh
+}
+aside{
+  background:linear-gradient(180deg,var(--panel),var(--panel2));
+  border-right:1px solid #1f2126;
+  padding:14px;
+  overflow:auto
+}
+main{position:relative}
+#map{position:absolute;inset:0}
+#loadingOverlay{
+  position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
+  background:rgba(0,0,0,0.45);color:#fff;font-size:13px;font-weight:500;z-index:9999;
+  pointer-events:none;opacity:0;transition:opacity .2s linear;
+  font-family:Inter,system-ui,Segoe UI,Roboto,Arial,sans-serif;
+}
+#loadingOverlay.active{opacity:1;pointer-events:auto;}
+.loading-box{
+  background:#0f1013;border:1px solid #2a2c34;border-radius:10px;padding:12px 16px;color:#fff;
+  box-shadow:0 20px 50px rgba(0,0,0,.6);min-width:180px;text-align:center;line-height:1.4;
+}
+.loading-spinner{
+  width:20px;height:20px;border-radius:50%;border:3px solid #444;border-top-color:var(--accent);
+  margin:0 auto 8px auto;animation:spin .7s linear infinite;
+}
+@keyframes spin{to {transform:rotate(360deg);}}
+h1{font-size:18px;margin:0 0 6px;font-weight:600;color:var(--text);}
+.sub{font-size:12px;color:var(--muted);margin-bottom:10px}
+.card{background:#0f1013;border:1px solid #23242a;border-radius:14px;padding:12px;margin-bottom:10px}
+.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+input,select,button,textarea{
+  width:100%;padding:9px;border-radius:10px;border:1px solid #2a2c34;background:#121318;color:var(--text);font-size:12px;
+}
+textarea{resize:vertical}
+button.primary{background:linear-gradient(135deg,var(--accent),#ffb703);color:#1a1a1a;font-weight:600;border:none}
+.legend{display:flex;flex-wrap:wrap;gap:6px;font-size:12px;max-height:160px;overflow-y:auto;}
+.legend .item{display:flex;align-items:center;gap:6px;background:#14151a;border:1px solid #2a2c34;border-radius:999px;padding:4px 8px;color:var(--text);}
+.swatch{width:14px;height:14px;border-radius:4px;border:1px solid #222}
+.footer-note{font-size:11px;color:var(--muted)}
+.divider{height:1px;background:#22252b;margin:8px 0}
+.pill{font-size:11px;padding:6px 10px;border-radius:999px;border:1px solid #2a2c34;background:#121318;color:var(--text);}
+.small-label{font-size:11px;color:var(--muted);width:100%;margin-top:-4px;margin-bottom:-2px;}
+
+/* table styling */
+.table-scroll-wrap{max-height:200px;overflow:auto;border:1px solid #2a2c34;border-radius:8px;background:#13141a}
+table.slim{width:100%;font-size:12px;border-collapse:collapse;min-width:600px;color:var(--text);}
+table.slim thead th{
+  position:sticky;top:0;background:#1d1f25;z-index:2;font-weight:600;font-size:12px;text-align:left;
+  padding:6px 8px;border-bottom:1px solid #2a2c34;white-space:nowrap;color:var(--text);
+}
+table.slim tbody td{padding:6px 8px;border-bottom:1px solid #2a2c34;white-space:nowrap;cursor:pointer;color:var(--text);}
+table.slim tbody tr:hover{background:#2a2c34;}
+</style>
+</head>
+
+<body>
+<div class="app">
+  <aside>
+    <h1>GeoBoost | AB InBev</h1>
+    <div class="sub">Postal → BDR ownership, workload & travel effort.</div>
+
+    <!-- 1) Load BC territory + Excel -->
+    <div class="card">
+      <label style="font-weight:600;font-size:13px;">1) Territory Geometry & Data</label>
+      <div class="footer-note" style="margin-bottom:6px">
+        BC map autoloads. Upload Excel once to load assignments (BDR / POC Code / Volume Threshold).
+      </div>
+      <div class="row">
+        <input id="excelInput" type="file" accept=".xlsx,.xls,.csv"/>
+      </div>
+    </div>
+
+    <!-- 2) Selection & Assignment -->
+    <div class="card" id="manualCard">
+      <label style="font-weight:600;font-size:13px;">2) Selection & Assignment</label>
+
+      <div class="grid">
+        <button id="btnSelectRect">Rectangle</button>
+        <button id="btnSelectLasso">Lasso</button>
+      </div>
+
+      <div class="row">
+        <button id="btnClearSelection">Clear Selection</button>
+      </div>
+
+      <!-- BDR dropdown for reassignment -->
+      <div class="row">
+        <select id="bdrNameSelect">
+          <option value="__custom__">New / Custom…</option>
+        </select>
+      </div>
+      <div class="small-label">If you pick "New / Custom…" we'll use the text box below.</div>
+
+      <div class="row"><input id="bdrName" placeholder="Assign to BDR name (custom)"/></div>
+      <div class="row"><button id="btnAssign" class="primary">Assign Selected → BDR</button></div>
+
+      <div class="legend" id="legend"></div>
+    </div>
+
+    <!-- 3) Filter -->
+    <div class="card" id="filterCard">
+      <label style="font-weight:600;font-size:13px;">3) Filter / Focus on Map</label>
+      <div class="footer-note" style="margin-bottom:6px">Use dropdown OR type search. Typing wins.</div>
+
+      <div class="row"><select id="filterBDR"><option value="ALL">All BDRs</option></select></div>
+      <div class="row"><input id="filterBDRText" type="text" placeholder="BDR contains... (optional)"/></div>
+
+      <div class="row"><select id="filterPostal"><option value="ALL">All Postal Codes</option></select></div>
+      <div class="row"><input id="filterPostalText" type="text" placeholder="Postal code contains... (optional)"/></div>
+
+      <div class="row"><select id="filterVolTh"><option value="ALL">All Volume Thresholds</option></select></div>
+      <div class="row"><input id="filterVolThText" type="text" placeholder="Volume Threshold contains... (optional)"/></div>
+
+      <div class="row">
+        <button id="btnApplyFilter" class="primary">Apply Filter</button>
+        <button id="btnClearFilter">Clear Filter</button>
+      </div>
+      <div class="footer-note">Volume Threshold comes from uploaded data.</div>
+    </div>
+
+    <!-- 4) Territory Stats -->
+    <div class="card" id="statsCard">
+      <label style="font-weight:600;font-size:13px;">4) Territory Stats (Current View)</label>
+
+      <div class="divider"></div>
+      <div class="grid">
+        <button id="btnRecalc">Recalculate</button>
+        <button id="btnExportCSV">Export Assignments</button>
+      </div>
+
+      <div class="divider"></div>
+      <div class="footer-note" style="margin-bottom:6px">
+        1 row per BDR: <b>POC Count</b> (distinct POC Code) | <b>Postal Count</b> (distinct Postal Code) |
+        <b>Volume</b> (mode) | <b>Min/Max/Avg Distance (km)</b> | <b>Min/Max/Avg Travel (min @ ~50 km/h)</b>
+      </div>
+
+      <div class="table-scroll-wrap">
+        <table class="slim">
+          <thead>
+            <tr>
+              <th>BDR</th>
+              <th>POC Count</th>
+              <th>Postal Count</th>
+              <th>Vol Mode</th>
+              <th>Min Km</th>
+              <th>Max Km</th>
+              <th>Avg Km</th>
+              <th>Min Min</th>
+              <th>Max Min</th>
+              <th>Avg Min</th>
+            </tr>
+          </thead>
+          <tbody id="statsBody"></tbody>
+        </table>
+      </div>
+
+      <div class="divider"></div>
+      <div>
+        <div style="font-weight:600;font-size:12px;margin-bottom:6px">Mismatched postal codes</div>
+        <div id="mismatch" class="pill" style="display:none;background:#1b1212;border-color:#4b1e1e;color:#f3c1c1;"></div>
+      </div>
+    </div>
+
+    <div class="footer-note">
+      Tip: click a BDR row to zoom/filter the map to that BDR.
+      <br/><br/>Internal Prototype — AB InBev Commercial Analytics
+    </div>
+  </aside>
+
+  <main>
+    <div id="map"></div>
+    <div id="loadingOverlay">
+      <div class="loading-box">
+        <div class="loading-spinner"></div>
+        <div id="loadingMsg">Loading BC shapes…</div>
+      </div>
+    </div>
+  </main>
+</div>
+
+<script>
+/* ========= CONFIG ========= */
+const AUTO_GEOJSON_PATH = "./bc_postal6_voronoi_dissolved.geojson";
+
+/* ========= UTIL ========= */
+const Util=(()=>{
+  const palette=[
+    "#4ade80","#60a5fa","#f472b6","#f97316","#facc15","#34d399",
+    "#c084fc","#fb7185","#22d3ee","#a3e635","#f43f5e","#10b981",
+    "#8b5cf6","#fde047","#38bdf8","#f59e0b"
+  ];
+  const bdrColors=new Map();
+  const norm=s=>s==null?"":s.toString().toUpperCase().replace(/\s+/g,"").trim();
+  const round=x=>Math.round(x*100)/100;
+  const colorForBDR=b=>{
+    if(!b)return"#2f3542";
+    if(!bdrColors.has(b))bdrColors.set(b,palette[bdrColors.size%palette.length]);
+    return bdrColors.get(b);
+  };
+  function mode(arr){
+    if(!arr||!arr.length)return"";
+    const m=new Map();
+    arr.forEach(v=>{
+      const k=(v===undefined||v===null||v==="")?"":String(v);
+      m.set(k,(m.get(k)||0)+1);
+    });
+    let best="",bestN=-1;
+    for(const [k,c]of m.entries()){
+      if(c>bestN && k!==""){best=k;bestN=c;}
+    }
+    return best;
+  }
+  const kmToMin = km => round(km*1.2); // ~50km/h -> 60/50 = 1.2
+  return {norm,round,colorForBDR,bdrColors,mode,kmToMin};
+})();
+
+/* ========= STATE ========= */
+const State={
+  map:null,
+  shapes:null,
+  featureByCode:new Map(),
+  propKey:null,
+
+  layer:null,
+  selection:new Set(),
+
+  // assignments: postal_code_norm -> BDR name
+  assignments:new Map(),
+
+  // metadata per postal: { pocCodes:Set, volTh:string }
+  postalMeta:new Map(),
+
+  // cached centroids: postal_code_norm -> [lon,lat]
+  centroidsByCode:new Map(),
+
+  // active filter
+  activeCodes:null
+};
+
+/* ========= LOADING OVERLAY ========= */
+function showLoading(msg){
+  const overlay=document.getElementById("loadingOverlay");
+  const text=document.getElementById("loadingMsg");
+  text.textContent=msg||"Loading…";
+  overlay.classList.add("active");
+}
+function hideLoading(){document.getElementById("loadingOverlay").classList.remove("active");}
+
+/* ========= MAP ========= */
+function initMap(){
+  State.map = L.map("map",{zoomControl:true,preferCanvas:true})
+    .setView([53.7267,-127.6476],5);
+
+  L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",{
+    maxZoom:19,attribution:"&copy; OpenStreetMap"
+  }).addTo(State.map);
+
+  State.layer = L.geoJSON(null,{style:featureStyle,onEachFeature})
+    .addTo(State.map);
+}
+
+function featureStyle(f){
+  const code = f.properties[State.propKey];
+  const n = Util.norm(code);
+  const bdr = State.assignments.get(n);
+  const sel = State.selection.has(n);
+  const fill = Util.colorForBDR(bdr);
+  return{
+    color: sel ? "#8ab4ff" : "#1f232a",
+    weight: sel ? 2 : 1,
+    fillColor: fill,
+    fillOpacity: bdr ? 0.6 : 0.15
+  };
+}
+
+function onEachFeature(feature,layer){
+  layer.on("mouseover",()=>{
+    if(!layer.getTooltip()){
+      const code=feature.properties[State.propKey];
+      const bdr=State.assignments.get(Util.norm(code))||"—";
+      layer.bindTooltip(`${code} • BDR: ${bdr}`,{sticky:true}).openTooltip();
+    }
+  });
+  layer.on("click",()=>{
+    const code=feature.properties[State.propKey];
+    const n=Util.norm(code);
+    if(State.selection.has(n))State.selection.delete(n);
+    else State.selection.add(n);
+    restyleLayer();
+  });
+}
+
+function restyleLayer(){
+  State.layer.setStyle(featureStyle);
+  renderLegend();
+}
+
+/* ========= CENTROIDS ========= */
+function ensureCentroid(feature){
+  try{
+    const c=turf.centroid(feature).geometry.coordinates;
+    if(Array.isArray(c)&&c.length===2&&isFinite(c[0])&&isFinite(c[1]))return c;
+  }catch(e){}
+  try{
+    const bb=turf.bbox(feature);
+    return[(bb[0]+bb[2])/2,(bb[1]+bb[3])/2];
+  }catch(e){}
+  return null;
+}
+
+function buildFeatureIndexAndCentroids(){
+  State.featureByCode.clear();
+  State.centroidsByCode.clear();
+  if(!State.shapes||!State.propKey)return;
+  for(const f of State.shapes.features||[]){
+    const code = Util.norm(f.properties[State.propKey]);
+    if(!code)continue;
+    State.featureByCode.set(code,f);
+    const c = ensureCentroid(f);
+    if(c) State.centroidsByCode.set(code,c); // [lon,lat]
+  }
+}
+
+/* ========= RENDER SHAPES ========= */
+function currentFC(){
+  if(!State.shapes) return {type:"FeatureCollection",features:[]};
+  if(!State.activeCodes || !State.activeCodes.size) return State.shapes;
+  const feats=State.shapes.features.filter(f=>{
+    const code=Util.norm(f.properties[State.propKey]);
+    return State.activeCodes.has(code);
+  });
+  return {type:"FeatureCollection",features:feats};
+}
+
+function renderShapes(fit=true){
+  State.layer.clearLayers();
+  State.layer.addData(currentFC());
+  if(fit){
+    const b=State.layer.getBounds();
+    if(b.isValid()) State.map.fitBounds(b.pad(0.05));
+  }
+  restyleLayer();
+}
+
+/* ========= LEGEND ========= */
+function renderLegend(){
+  const el=document.getElementById("legend");
+  el.innerHTML="";
+  Util.bdrColors.forEach((c,bdr)=>{
+    const div=document.createElement("div");
+    div.className="item";
+    div.innerHTML=`<span class="swatch" style="background:${c}"></span>${bdr}`;
+    el.appendChild(div);
+  });
+}
+
+/* ========= DRAW SELECTION ========= */
+function enableRectangleSelect(){
+  const drawRect=new L.Draw.Rectangle(State.map,{shapeOptions:{color:"#8ab4ff"}});
+  drawRect.enable();
+  State.map.once(L.Draw.Event.CREATED,e=>{
+    if(e.layerType==="rectangle"){
+      const bounds=e.layer.getBounds();
+      State.selection.clear();
+      State.layer.eachLayer(l=>{
+        if(!l.feature)return;
+        const g=l.getBounds?.();
+        if(g&&bounds.intersects(g)){
+          const code=l.feature.properties[State.propKey];
+          if(code)State.selection.add(Util.norm(code));
+        }
+      });
+      restyleLayer();
+    }
+  });
+}
+function enableLassoSelect(){
+  const drawPoly=new L.Draw.Polygon(State.map,{shapeOptions:{color:"#8ab4ff"}});
+  drawPoly.enable();
+  State.map.once(L.Draw.Event.CREATED,e=>{
+    if(e.layerType==="polygon"){
+      const ring=e.layer.getLatLngs()[0].map(ll=>[ll.lng,ll.lat]);
+      if(ring.length&&(ring[0][0]!==ring.at(-1)[0]||ring[0][1]!==ring.at(-1)[1])) ring.push([...ring[0]]);
+      const poly=turf.polygon([ring]);
+      State.selection.clear();
+      State.layer.eachLayer(l=>{
+        const code=l?.feature?.properties?.[State.propKey];
+        if(!code)return;
+        try{
+          const c=turf.centroid(l.feature).geometry.coordinates;
+          if(turf.booleanPointInPolygon(turf.point(c),poly)){
+            State.selection.add(Util.norm(code));
+          }
+        }catch{}
+      });
+      restyleLayer();
+    }
+  });
+}
+function clearSelection(){State.selection.clear();restyleLayer();}
+
+/* ========= ASSIGNMENT ========= */
+function refreshBDRDropdown(){
+  const sel=document.getElementById("bdrNameSelect");
+  const prev=sel.value;
+  sel.innerHTML='<option value="__custom__">New / Custom…</option>';
+  const bdrSet=new Set([...State.assignments.values()].filter(Boolean));
+  [...bdrSet].sort().forEach(b=>{
+    const opt=document.createElement("option");
+    opt.value=b;opt.textContent=b;sel.appendChild(opt);
+  });
+  if([...bdrSet,"__custom__"].includes(prev)) sel.value=prev;
+}
+function getAssignTargetBDR(){
+  const selVal=document.getElementById("bdrNameSelect").value;
+  const custom=document.getElementById("bdrName").value.trim();
+  return (selVal && selVal!=="__custom__") ? selVal : custom;
+}
+function assignSelectedToBDR(){
+  const target=getAssignTargetBDR();
+  if(!target){alert("Pick or type a BDR first.");return;}
+  if(State.selection.size===0){alert("No postal codes selected.");return;}
+  State.selection.forEach(code=>{
+    State.assignments.set(code,target);
+    Util.colorForBDR(target);
+  });
+  restyleLayer();
+  refreshBDRDropdown();
+  refreshFiltersFromState();
+  Stats.render();
+  showMismatch();
+}
+
+/* ========= FILTER ========= */
+function refreshFiltersFromState(){
+  const bdrSel=document.getElementById("filterBDR");
+  const postalSel=document.getElementById("filterPostal");
+  const volSel=document.getElementById("filterVolTh");
+
+  const bdrSet=new Set([...State.assignments.values()].filter(Boolean));
+  const pcSet=new Set(State.shapes.features.map(f=>Util.norm(f.properties[State.propKey])));
+  const volSet=new Set();
+  State.postalMeta.forEach(v=>{if(v.volTh)volSet.add(v.volTh);});
+
+  function fill(sel,set,label){
+    const old=sel.value;
+    sel.innerHTML=`<option value="ALL">${label}</option>`+
+      [...set].sort().map(v=>`<option value="${v}">${v}</option>`).join("");
+    if([...set,"ALL"].includes(old)) sel.value=old;
+  }
+  fill(bdrSel,bdrSet,"All BDRs");
+  fill(postalSel,pcSet,"All Postal Codes");
+  fill(volSel,volSet,"All Volume Thresholds");
+
+  refreshBDRDropdown();
+  renderLegend();
+}
+
+function applyFilter(){
+  const bdrDrop=document.getElementById("filterBDR").value;
+  const bdrText=document.getElementById("filterBDRText").value.trim();
+  const pcDrop=document.getElementById("filterPostal").value;
+  const pcText=document.getElementById("filterPostalText").value.trim();
+  const volDrop=document.getElementById("filterVolTh").value;
+  const volText=document.getElementById("filterVolThText").value.trim();
+
+  let allowed=null;
+
+  if(bdrText){
+    const setBDR=new Set();
+    State.assignments.forEach((bdr,pc)=>{ if(bdr && bdr.toLowerCase().includes(bdrText.toLowerCase())) setBDR.add(pc); });
+    allowed=setBDR;
+  }else if(bdrDrop!=="ALL"){
+    const setBDR=new Set();
+    State.assignments.forEach((bdr,pc)=>{ if(bdr===bdrDrop) setBDR.add(pc); });
+    allowed=setBDR;
+  }
+
+  if(pcText){
+    const setPC=new Set();
+    State.assignments.forEach((_bdr,pc)=>{ if(pc && pc.toLowerCase().includes(pcText.toLowerCase())) setPC.add(pc); });
+    allowed = allowed ? new Set([...allowed].filter(c=>setPC.has(c))) : setPC;
+  }else if(pcDrop!=="ALL"){
+    const ncode=Util.norm(pcDrop);
+    allowed = allowed ? new Set([...allowed].filter(c=>c===ncode)) : new Set([ncode]);
+  }
+
+  if(volText){
+    const setVol=new Set();
+    State.postalMeta.forEach((meta,pc)=>{ if(meta.volTh && meta.volTh.toLowerCase().includes(volText.toLowerCase())) setVol.add(pc); });
+    allowed = allowed ? new Set([...allowed].filter(c=>setVol.has(c))) : setVol;
+  }else if(volDrop!=="ALL"){
+    const setVol=new Set();
+    State.postalMeta.forEach((meta,pc)=>{ if(meta.volTh===volDrop) setVol.add(pc); });
+    allowed = allowed ? new Set([...allowed].filter(c=>setVol.has(c))) : setVol;
+  }
+
+  State.activeCodes = (allowed && allowed.size) ? allowed : null;
+  renderShapes(true);
+  Stats.render();
+  showMismatch();
+}
+function clearFilter(){
+  document.getElementById("filterBDR").value="ALL";
+  document.getElementById("filterBDRText").value="";
+  document.getElementById("filterPostal").value="ALL";
+  document.getElementById("filterPostalText").value="";
+  document.getElementById("filterVolTh").value="ALL";
+  document.getElementById("filterVolThText").value="";
+  State.activeCodes=null;
+  renderShapes(true);
+  Stats.render();
+  showMismatch();
+}
+
+/* ========= STATS (with distinct POC Code count) ========= */
+const Stats=(()=>{
+  function calc(){
+    // bdr -> { postals:Set, pocs:Set, volThs:[], coords:[ [lon,lat], ... ] }
+    const bucket=new Map();
+
+    State.assignments.forEach((bdr,pcNorm)=>{
+      if(!bdr)return;
+      if(!bucket.has(bdr)){
+        bucket.set(bdr,{postals:new Set(),pocs:new Set(),volThs:[],coords:[]});
+      }
+      const b=bucket.get(bdr);
+      b.postals.add(pcNorm);
+
+      // get meta for this postal: collect distinct POC codes + volume labels
+      const meta=State.postalMeta.get(pcNorm);
+      if(meta){
+        if(meta.volTh) b.volThs.push(meta.volTh);
+        if(meta.pocCodes) meta.pocCodes.forEach(code=>b.pocs.add(code));
+      }
+
+      // centroid for distance calc
+      let c = State.centroidsByCode.get(pcNorm);
+      if(!c){
+        const feat=State.featureByCode.get(pcNorm);
+        c = feat ? ensureCentroid(feat) : null;
+        if(c) State.centroidsByCode.set(pcNorm,c);
+      }
+      if(c) b.coords.push(c);
+    });
+
+    const rows=[];
+    for(const [bdr,b] of bucket){
+      let cx=0,cy=0,n=0;
+      b.coords.forEach(([lon,lat])=>{cx+=lon;cy+=lat;n++;});
+      if(n>0){cx/=n;cy/=n;}
+
+      const dists=[];
+      if(n>0){
+        b.coords.forEach(([lon,lat])=>{
+          try{
+            const d=turf.distance(turf.point([lon,lat]),turf.point([cx,cy]),{units:"kilometers"});
+            if(isFinite(d)) dists.push(d);
+          }catch{}
+        });
+      }
+
+      let minKm=0,maxKm=0,avgKm=0;
+      if(dists.length){
+        minKm=Math.min(...dists);
+        maxKm=Math.max(...dists);
+        avgKm=dists.reduce((a,c)=>a+c,0)/dists.length;
+      }
+
+      rows.push({
+        bdr,
+        pocCount: b.pocs.size,             // DISTINCT POC Code count ✅
+        postalCount: b.postals.size,       // DISTINCT Postal Code count ✅
+        volMode: Util.mode(b.volThs),
+        minKm: Util.round(minKm),
+        maxKm: Util.round(maxKm),
+        avgKm: Util.round(avgKm),
+        minMin: Util.kmToMin(minKm),
+        maxMin: Util.kmToMin(maxKm),
+        avgMin: Util.kmToMin(avgKm)
+      });
+    }
+
+    return rows.sort((a,b)=>a.bdr.localeCompare(b.bdr));
+  }
+
+  function render(){
+    const body=document.getElementById("statsBody");
+    if(!State.shapes||!State.propKey){
+      body.innerHTML=`<tr><td colspan="10" style="color:#9da3af">Load shapes and Excel…</td></tr>`;
+      return;
+    }
+    const rows=calc();
+    if(!rows.length){
+      body.innerHTML=`<tr><td colspan="10" style="color:#9da3af">No BDR assignments yet.</td></tr>`;
+      return;
+    }
+
+    body.innerHTML = rows.map(r=>`
+      <tr data-bdr="${r.bdr}">
+        <td>${r.bdr}</td>
+        <td>${r.pocCount}</td>
+        <td>${r.postalCount}</td>
+        <td>${r.volMode||""}</td>
+        <td>${r.minKm}</td>
+        <td>${r.maxKm}</td>
+        <td>${r.avgKm}</td>
+        <td>${r.minMin}</td>
+        <td>${r.maxMin}</td>
+        <td>${r.avgMin}</td>
+      </tr>
+    `).join("");
+
+    Array.from(body.querySelectorAll("tr[data-bdr]")).forEach(tr=>{
+      tr.addEventListener("click",()=>{
+        const selBDR=tr.getAttribute("data-bdr");
+        document.getElementById("filterBDR").value=selBDR;
+        document.getElementById("filterBDRText").value="";
+        document.getElementById("filterPostal").value="ALL";
+        document.getElementById("filterPostalText").value="";
+        document.getElementById("filterVolTh").value="ALL";
+        document.getElementById("filterVolThText").value="";
+        applyFilter();
+      });
+    });
+  }
+
+  return {render};
+})();
+
+/* ========= MISMATCH ========= */
+function showMismatch(){
+  const div=document.getElementById("mismatch");
+  if(!State.shapes||!State.propKey){div.style.display="none";return;}
+  const known=new Set(State.shapes.features.map(f=>Util.norm(f.properties[State.propKey])));
+  const bad=[];
+  for(const code of State.assignments.keys()){
+    if(!known.has(code))bad.push(code);
+  }
+  if(bad.length){
+    const sample=bad.slice(0,20).join(", ");
+    div.style.display="block";
+    div.textContent = `${bad.length} not found. Eg: ${sample}${bad.length>20?"…":""}`;
+  }else{
+    div.style.display="none";div.textContent="";
+  }
+}
+
+/* ========= CSV EXPORT ========= */
+function exportCSV(){
+  const rows=["postal_code,bdr"];
+  State.assignments.forEach((bdr,pc)=>{rows.push(`${pc},${bdr||""}`);});
+  const blob=new Blob([rows.join("\n")],{type:"text/csv"});
+  const a=document.createElement("a");
+  a.href=URL.createObjectURL(blob);
+  a.download="assignments_export.csv";
+  a.click();
+}
+
+/* ========= AUTO-LOAD BC ========= */
+async function autoLoadBC(){
+  showLoading("Loading BC shapes…");
+  try{
+    const res=await fetch(AUTO_GEOJSON_PATH);
+    if(!res.ok)throw new Error("HTTP "+res.status);
+    const gj=await res.json();
+
+    State.shapes = gj.type==="FeatureCollection" ? gj : {type:"FeatureCollection",features:gj.features||[]};
+    const props=Object.keys(State.shapes.features[0].properties||{});
+    const guess = props.find(p=>/post.*code|postal|zip|cfsa/i.test(p)) || props[0];
+    State.propKey=guess;
+
+    buildFeatureIndexAndCentroids();
+    renderShapes(true);
+    refreshFiltersFromState();
+    Stats.render();
+    showMismatch();
+  }catch(err){
+    console.error("Auto-load failed:",err);
+    alert("Failed to auto-load BC territory layer: "+err.message);
+  }finally{
+    hideLoading();
+  }
+}
+
+/* ========= EXCEL INGEST ========= */
+function readExcelToAssignments(rows){
+  function pick(row, candidates){
+    const keys=Object.keys(row);
+    for(const want of candidates){
+      const idx=keys.findIndex(k=>k.toLowerCase()===want.toLowerCase());
+      if(idx>-1) return keys[idx];
+    }
+    return null;
+  }
+  if(!rows.length){alert("No rows in Excel");return;}
+
+  const pcCol  = pick(rows[0],["POC Postal Code","Postal Code","ZIP Code","poc_postal_code","postal_code"]);
+  const bdrCol = pick(rows[0],["Sales Territory Person Responsible","Salesforce Core Person Responsible","BDR","bdr"]);
+  const volCol = pick(rows[0],["Volume Threshold","Vol Thresh","volume_threshold"]);
+  const pocCol = pick(rows[0],["POC Code","POC","POC_ID","POC Id","POC Number","poc_code"]); // <-- NEW
+
+  if(!pcCol || !bdrCol){
+    alert("Couldn't detect Postal Code / BDR columns in Excel.");return;
+  }
+
+  State.assignments = new Map();
+  State.postalMeta  = new Map();
+  const colorNeeded=new Set();
+
+  rows.forEach(r=>{
+    let pc  = (r[pcCol]  ?? "").toString().trim();
+    let bdr = (r[bdrCol] ?? "").toString().trim();
+    let vol = volCol ? (r[volCol] ?? "").toString().trim() : "";
+    let poc = pocCol ? (r[pocCol] ?? "").toString().trim() : ""; // <-- capture POC Code
+
+    pc = Util.norm(pc); // normalize postal
+
+    if(pc && bdr){
+      State.assignments.set(pc,bdr);
+      colorNeeded.add(bdr);
+
+      const prev = State.postalMeta.get(pc) ?? { pocCodes:new Set(), volTh:"" };
+      if(vol) prev.volTh = vol;
+      if(poc) prev.pocCodes.add(poc); // <-- store distinct POC codes
+      State.postalMeta.set(pc, prev);
+    }
+  });
+
+  colorNeeded.forEach(bdr=>Util.colorForBDR(bdr));
+}
+
+/* ========= WIRE UI ========= */
+function wireUI(){
+  document.getElementById("btnSelectRect").onclick=enableRectangleSelect;
+  document.getElementById("btnSelectLasso").onclick=enableLassoSelect;
+  document.getElementById("btnClearSelection").onclick=clearSelection;
+  document.getElementById("btnAssign").onclick=assignSelectedToBDR;
+
+  document.getElementById("btnApplyFilter").onclick=applyFilter;
+  document.getElementById("btnClearFilter").onclick=clearFilter;
+
+  document.getElementById("btnRecalc").onclick=()=>{Stats.render();showMismatch();};
+  document.getElementById("btnExportCSV").onclick=exportCSV;
+
+  document.getElementById("excelInput").addEventListener("change",e=>{
+    const file=e.target.files[0]; if(!file)return;
+    const reader=new FileReader();
+    reader.onload=evt=>{
+      const data=new Uint8Array(evt.target.result);
+      const wb=XLSX.read(data,{type:"array"});
+      const sheet=XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]],{defval:""});
+      readExcelToAssignments(sheet);
+      restyleLayer();
+      refreshBDRDropdown();
+      refreshFiltersFromState();
+      Stats.render();
+      showMismatch();
+      alert("Excel loaded successfully!");
+    };
+    reader.readAsArrayBuffer(file);
+  });
+}
+
+/* ========= BOOT ========= */
+initMap();
+wireUI();
+autoLoadBC();
+</script>
+</body>
+</html>
