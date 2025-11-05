@@ -1,0 +1,1794 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>GeoBoost — AB InBev Territory Optimizer</title>
+
+
+<!-- Leaflet core -->
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+<!-- Draw tools -->
+<link rel="stylesheet" href="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.css"/>
+<script src="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.js"></script>
+
+<!-- Turf for geometry / distance -->
+<script src="https://unpkg.com/@turf/turf@6.5.0/turf.min.js"></script>
+
+<!-- Shapefile reader -->
+<script src="https://unpkg.com/shpjs@latest/dist/shp.min.js"></script>
+
+<!-- XLSX parser -->
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+
+<style>
+:root{
+  --bg:#0b0b0c;
+  --panel:#111114;
+  --panel2:#17181b;
+  --text:#eaeaf0;
+  --muted:#9da3af;
+  --accent:#ffd166
+}
+*{box-sizing:border-box}
+body{
+  margin:0;
+  background:var(--bg);
+  color:var(--text);
+  font-family:Inter,system-ui,Segoe UI,Roboto,Arial,sans-serif
+}
+.app{
+  display:grid;
+  grid-template-columns:360px 1fr;
+  height:100vh
+}
+aside{
+  background:linear-gradient(180deg,var(--panel),var(--panel2));
+  border-right:1px solid #1f2126;
+  padding:14px;
+  overflow:auto
+}
+main{position:relative}
+#map{
+  position:absolute;
+  inset:0
+}
+#loadingOverlay{
+  position:absolute;
+  inset:0;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  background:rgba(0,0,0,0.45);
+  color:#fff;
+  font-size:13px;
+  font-weight:500;
+  z-index:9999;
+  pointer-events:none;
+  opacity:0;
+  transition:opacity .2s linear;
+  font-family:Inter,system-ui,Segoe UI,Roboto,Arial,sans-serif;
+}
+#loadingOverlay.active{
+  opacity:1;
+  pointer-events:auto;
+}
+.loading-box{
+  background:#0f1013;
+  border:1px solid #2a2c34;
+  border-radius:10px;
+  padding:12px 16px;
+  color:#fff;
+  box-shadow:0 20px 50px rgba(0,0,0,.6);
+  min-width:180px;
+  text-align:center;
+  line-height:1.4;
+}
+.loading-spinner{
+  width:20px;
+  height:20px;
+  border-radius:50%;
+  border:3px solid #444;
+  border-top-color:var(--accent);
+  margin:0 auto 8px auto;
+  animation:spin .7s linear infinite;
+}
+@keyframes spin{
+  to {transform:rotate(360deg);}
+}
+
+h1{
+  font-size:18px;
+  margin:0 0 6px
+}
+.sub{
+  font-size:12px;
+  color:var(--muted);
+  margin-bottom:10px
+}
+.card{
+  background:#0f1013;
+  border:1px solid #23242a;
+  border-radius:14px;
+  padding:12px;
+  margin-bottom:10px
+}
+.row{
+  display:flex;
+  gap:8px;
+  align-items:center;
+  flex-wrap:wrap
+}
+.grid{
+  display:grid;
+  grid-template-columns:1fr 1fr;
+  gap:8px
+}
+input,select,button,textarea{
+  width:100%;
+  padding:9px;
+  border-radius:10px;
+  border:1px solid #2a2c34;
+  background:#121318;
+  color:var(--text);
+  font-size:12px;
+}
+textarea{resize:vertical}
+button.primary{
+  background:linear-gradient(135deg,var(--accent),#ffb703);
+  color:#1a1a1a;
+  font-weight:600;
+  border:none
+}
+.tabs{
+  display:flex;
+  gap:8px;
+  margin-bottom:8px
+}
+.tab{
+  flex:1;
+  text-align:center;
+  padding:9px;
+  border-radius:10px;
+  border:1px solid #2a2c34;
+  background:#121318;
+  cursor:pointer;
+  font-size:12px;
+}
+.tab.active{background:#1d1f25}
+.legend{
+  display:flex;
+  flex-wrap:wrap;
+  gap:6px;
+  font-size:12px;
+}
+.legend .item{
+  display:flex;
+  align-items:center;
+  gap:6px;
+  background:#14151a;
+  border:1px solid #2a2c34;
+  border-radius:999px;
+  padding:4px 8px;
+}
+.swatch{
+  width:14px;
+  height:14px;
+  border-radius:4px;
+  border:1px solid #222
+}
+.footer-note{
+  font-size:11px;
+  color:var(--muted)
+}
+.divider{
+  height:1px;
+  background:#22252b;
+  margin:8px 0
+}
+.pill{
+  font-size:11px;
+  padding:6px 10px;
+  border-radius:999px;
+  border:1px solid #2a2c34;
+  background:#121318
+}
+.problem{
+  font-size:12px;
+  background:#1b1212;
+  border:1px solid #4b1e1e;
+  color:#f3c1c1;
+  border-radius:10px;
+  padding:8px
+}
+
+/* table styling */
+.table-scroll-wrap{
+  max-height:200px;
+  overflow:auto;
+  border:1px solid #2a2c34;
+  border-radius:8px;
+  background:#13141a
+}
+table.slim{
+  width:100%;
+  font-size:12px;
+  border-collapse:collapse;
+  min-width:520px;
+}
+table.slim thead th{
+  position:sticky;
+  top:0;
+  background:#1d1f25;
+  z-index:2;
+  font-weight:600;
+  font-size:12px;
+  text-align:left;
+  padding:6px 8px;
+  border-bottom:1px solid #2a2c34;
+  white-space:nowrap;
+}
+table.slim tbody td{
+  padding:6px 8px;
+  border-bottom:1px solid #2a2c34;
+  white-space:nowrap;
+  cursor:pointer;
+}
+.small-label{
+  font-size:11px;
+  color:var(--muted);
+  width:100%;
+  margin-top:-4px;
+  margin-bottom:-2px;
+}
+</style>
+</head>
+
+<body>
+<div class="app">
+  <aside>
+    <h1>GeoBoost | AB InBev</h1>
+    <div class="sub">
+        Postal code → BDR ownership, workload balance, and travel effort — live.
+    </div>
+
+
+    <!-- View tabs -->
+    <div class="card">
+      <div class="tabs" id="viewTabs">
+        <div class="tab active" data-view="asIs">As-Is</div>
+        <div class="tab" data-view="optimized">Optimized</div>
+      </div>
+      <div class="row">
+        <button id="btnUndo">Undo ⌘/Ctrl+Z</button>
+        <button id="btnRedo">Redo ⇧⌘/Ctrl+Z / Ctrl+Y</button>
+        <button id="btnCopyToOptimized">Seed Optimized from As-Is</button>
+      </div>
+    </div>
+
+    <!-- Load Shapes / Country selector -->
+    <div class="card">
+      <label>1) Territory Geometry</label>
+      <div class="footer-note" style="margin-bottom:6px">
+        Country/map layer will auto-load. You can override with a file or URL.
+      </div>
+
+      <!-- country dropdown -->
+      <div class="row">
+        <select id="countrySelect">
+          <option value="bc" selected>British Columbia</option>
+          <!-- Add future regions here -->
+        </select>
+      </div>
+
+      <!-- manual override still allowed -->
+      <div class="row"><input id="shapeFile" type="file" accept=".json,.geojson,.zip,.topojson"/></div>
+      <div class="row"><input id="shapeUrl" type="text" placeholder="Or paste GeoJSON URL"/></div>
+      <div class="row"><button id="btnLoadUrl">Load from URL</button></div>
+      <div class="row"><select id="propKeySelect" title="Choose property with postal code"></select></div>
+      <div class="grid">
+        <button id="btnSaveProject">Save Project</button>
+        <button id="btnLoadProject">Load Project</button>
+      </div>
+      <div class="footer-note">Example keys: POSTAL_CODE, CFSAUID, etc.</div>
+    </div>
+
+    <!-- Load Assignments / Data -->
+    <div class="card">
+      <label>2) Upload / Paste As-Is Assignments + POC info</label>
+      <div class="row">
+        <input id="bdrCsv" type="file" accept=".csv,.xlsx,.xls,.tsv,.json"/>
+      </div>
+      <div class="row">
+        <textarea id="pasteData" rows="4" placeholder="Headers: postal_code,bdr,poc_code,volume_threshold ..."></textarea>
+      </div>
+      <div class="grid">
+        <button id="btnLoadPaste">Load Pasted Data</button>
+        <button id="btnClearAssign">Clear Assignments</button>
+      </div>
+      <div class="row">
+        <label class="pill"><input id="chkFSA" type="checkbox"> Canada: Trim to FSA (3 chars)</label>
+      </div>
+      <div class="row">
+        <label class="pill"><input id="chkNormalize" type="checkbox" checked> Normalize codes (uppercase / no spaces)</label>
+      </div>
+      <div class="row">
+        <button id="btnTemplate">Download CSV Template</button>
+      </div>
+      <div class="footer-note">
+        We capture POC Code & Volume Threshold here. No 2nd upload.
+      </div>
+    </div>
+
+    <!-- Selection & assignment -->
+    <div class="card" id="manualCard">
+      <label>3) Selection & Assignment</label>
+      <div class="grid">
+        <button id="btnSelectRect">Rectangle</button>
+        <button id="btnSelectLasso">Lasso</button>
+      </div>
+      <div class="row">
+        <button id="btnClearSelection">Clear Selection</button>
+      </div>
+
+      <!-- BDR dropdown for reassignment -->
+      <div class="row">
+        <select id="bdrNameSelect">
+          <option value="__custom__">New / Custom…</option>
+        </select>
+      </div>
+      <div class="small-label">If you pick "New / Custom…" we’ll use the text box below.</div>
+
+      <div class="row">
+        <input id="bdrName" placeholder="Assign to BDR name (custom)"/>
+      </div>
+      <div class="row">
+        <button id="btnAssign" class="primary">Assign Selected → BDR</button>
+      </div>
+
+      <div class="legend" id="legend"></div>
+    </div>
+
+    <!-- Filter -->
+    <div class="card" id="filterCard">
+      <label>4) Filter / Focus on Map</label>
+      <div class="footer-note" style="margin-bottom:6px">
+        Use dropdown OR type search. Typing wins.
+      </div>
+
+      <!-- BDR filter -->
+      <div class="row">
+        <select id="filterBDR"><option value="ALL">All BDRs</option></select>
+      </div>
+      <div class="row">
+        <input id="filterBDRText" type="text" placeholder="BDR contains... (optional)"/>
+      </div>
+
+      <!-- Postal filter -->
+      <div class="row">
+        <select id="filterPostal"><option value="ALL">All Postal Codes</option></select>
+      </div>
+      <div class="row">
+        <input id="filterPostalText" type="text" placeholder="Postal code contains... (optional)"/>
+      </div>
+
+      <!-- Volume filter -->
+      <div class="row">
+        <select id="filterVolTh"><option value="ALL">All Volume Thresholds</option></select>
+      </div>
+      <div class="row">
+        <input id="filterVolThText" type="text" placeholder="Volume Threshold contains... (optional)"/>
+      </div>
+
+      <div class="row">
+        <button id="btnApplyFilter" class="primary">Apply Filter</button>
+        <button id="btnClearFilter">Clear Filter</button>
+      </div>
+      <div class="footer-note">
+        Volume Threshold comes from uploaded data.
+      </div>
+    </div>
+
+    <!-- Territory Stats -->
+    <div class="card" id="statsCard">
+      <label>5) Territory Stats (current view)</label>
+
+      <div class="divider"></div>
+      <div class="grid">
+        <button id="btnRecalc">Recalculate</button>
+        <button id="btnExportCSV">Export Assignments</button>
+      </div>
+
+      <div class="divider"></div>
+      <div class="footer-note" style="margin-bottom:6px">
+        1 row per BDR:
+        POC Count | Postal Code Count | Volume Threshold (most common) |
+        Min / Max / Avg Travel (minutes @~50km/h)
+      </div>
+
+      <div class="table-scroll-wrap">
+        <table class="slim">
+          <thead>
+            <tr>
+              <th>BDR</th>
+              <th>POC Count</th>
+              <th>Postal Code Count</th>
+              <th>Volume Threshold</th>
+              <th>Min Dist (km)</th>
+              <th>Max Dist (km)</th>
+              <th>Avg Dist (km)</th>
+              <th>Min Travel (min)</th>
+              <th>Max Travel (min)</th>
+              <th>Avg Travel (min)</th>
+            </tr>
+          </thead>
+          <tbody id="statsBody"></tbody>
+        </table>
+
+      </div>
+
+      <div class="divider"></div>
+      <div>
+        <div style="font-weight:600;font-size:12px;margin-bottom:6px">Mismatched postal codes</div>
+        <div id="mismatch" class="problem" style="display:none"></div>
+      </div>
+    </div>
+
+    <div class="footer-note">
+      Tip: click a BDR row to zoom/filter the map to that BDR.
+    </div>
+  </aside>
+
+  <main>
+    <div id="map"></div>
+    <div id="loadingOverlay">
+      <div class="loading-box">
+        <div class="loading-spinner"></div>
+        <div id="loadingMsg">Loading BC shapes…</div>
+      </div>
+    </div>
+  </main>
+</div>
+
+<script>
+/* ========= CONFIG ========= */
+/* Use a simplified GeoJSON (post-simplify via mapshaper).
+   Put that file in the SAME folder as this HTML. */
+const DEFAULT_BC_GEOJSON_URL = "./bc_postal6_simplified.geojson";
+
+/* Perf flag: avoid re-fitting map bounds on every filter */
+let _justFiltered = false;
+
+/* ========= Utility ========= */
+const Util=(()=>{
+  const palette=['#4ade80','#60a5fa','#f472b6','#f97316','#facc15','#34d399',
+                  '#c084fc','#fb7185','#22d3ee','#a3e635','#f43f5e','#10b981',
+                  '#8b5cf6','#fde047','#38bdf8','#f59e0b'];
+  const bdrColors=new Map();
+  const norm=s=>s==null?'':s.toString().toUpperCase().replace(/\s+/g,'').trim();
+  const round=x=>Math.round(x*10)/10;
+  const colorForBDR=b=>{
+    if(!b) return '#2f3542';
+    if(!bdrColors.has(b)) bdrColors.set(b,palette[bdrColors.size%palette.length]);
+    return bdrColors.get(b);
+  };
+  function mode(arr){
+    const m=new Map();
+    arr.forEach(v=>{
+      const k=(v===undefined||v===null||v==="")?"":String(v);
+      m.set(k,(m.get(k)||0)+1);
+    });
+    let best="",bestN=-1;
+    for(const [k,c] of m.entries()){
+      if(c>bestN && k!==""){best=k;bestN=c;}
+    }
+    return best;
+  }
+  // convert km → travel minutes using ~50 km/h average
+  function kmToMin(km){
+    return round(km * 1.2); // 60/50
+  }
+  return {norm,round,colorForBDR,bdrColors,mode,kmToMin};
+})();
+
+/* ========= State ========= */
+const State={
+  map:null,
+  currentView:'asIs',
+
+  shapes:null,
+  propKey:null,
+  activeCodes:null,
+
+  layers:{asIs:null,optimized:null},
+  selection:new Set(),
+
+  assignments:{asIs:new Map(),optimized:new Map()},
+
+  centroidsByCode:new Map(),
+  featureByCode:new Map(),
+  lazyCentroids:false,
+  centroidsReady:false,
+
+  postalMeta:new Map()
+};
+
+/* ========= History ========= */
+const History=(()=>{
+  const stack=[];let idx=-1;const LIMIT=40;
+  function snapshot(label){
+    return{
+      label,
+      propKey:State.propKey,
+      assignments:{
+        asIs:[...State.assignments.asIs.entries()],
+        optimized:[...State.assignments.optimized.entries()]
+      },
+      postalMeta:[...State.postalMeta.entries()].map(([pc,v])=>({
+        pc,
+        pocCodes:[...v.pocCodes],
+        volTh:v.volTh
+      })),
+      bdrColors:[...Util.bdrColors.entries()],
+      activeCodes:State.activeCodes?[...State.activeCodes]:null
+    };
+  }
+  function restore(s){
+    State.propKey=s.propKey;
+    State.assignments.asIs=new Map(s.assignments.asIs);
+    State.assignments.optimized=new Map(s.assignments.optimized);
+    State.postalMeta=new Map(
+      s.postalMeta.map(obj=>[
+        obj.pc,
+        {pocCodes:new Set(obj.pocCodes||[]), volTh:obj.volTh||""}
+      ])
+    );
+    Util.bdrColors.clear();
+    s.bdrColors.forEach(([k,v])=>Util.bdrColors.set(k,v));
+    State.activeCodes = s.activeCodes?new Set(s.activeCodes):null;
+    State.centroidsReady=false;
+  }
+  function push(label){
+    stack.splice(idx+1);
+    stack.push(snapshot(label));
+    if(stack.length>LIMIT)stack.shift();
+    idx=stack.length-1;
+    UI.updateUndoRedo();
+  }
+  function undo(){
+    if(idx<=0)return;
+    idx--;
+    restore(stack[idx]);
+    UI.afterHistory();
+    UI.updateUndoRedo();
+  }
+  function redo(){
+    if(idx>=stack.length-1)return;
+    idx++;
+    restore(stack[idx]);
+    UI.afterHistory();
+    UI.updateUndoRedo();
+  }
+  function init(){push('Initial');}
+  return {
+    push,undo,redo,init,
+    canUndo:()=>idx>0,
+    canRedo:()=>idx<stack.length-1
+  };
+})();
+
+/* ========= UI ========= */
+const UI=(()=>{
+  function legend(){
+    const el=document.getElementById('legend');
+    el.innerHTML='';
+    Util.bdrColors.forEach((c,b)=>{
+      const d=document.createElement('div');
+      d.className='item';
+      d.innerHTML=`<span class="swatch" style="background:${c}"></span>${b}`;
+      el.appendChild(d);
+    });
+  }
+
+  function featureStyle(view){
+    return f=>{
+      const code=f.properties[State.propKey];
+      const n=code?Util.norm(code):null;
+      const bdr=n?State.assignments[view].get(n):null;
+      const sel=n&&State.selection.has(n);
+      const fill=Util.colorForBDR(bdr);
+      return{
+        color:sel?'#8ab4ff':'#1f232a',
+        weight:sel?2:1,
+        fillColor:fill,
+        fillOpacity:bdr?0.6:0.15
+      };
+    };
+  }
+
+  function restyle(){
+    // styling only (cheap)
+    State.layers.asIs.setStyle(featureStyle('asIs'));
+    State.layers.optimized.setStyle(featureStyle('optimized'));
+    legend();
+  }
+
+  function afterHistory(){
+    const allBDR = new Set([
+      ...State.assignments.asIs.values(),
+      ...State.assignments.optimized.values()
+    ]);
+    allBDR.forEach(b=>{ if(b) Util.colorForBDR(b); });
+
+    Shapes.renderLayers(); // use current filter
+    legend();
+    Stats.render();
+    Mismatch.render();
+    Filter.refreshOptions();
+    if(!_justFiltered){
+      Filter.apply();
+    }
+    Assignment.refreshBDRDropdown();
+    _justFiltered = false;
+  }
+
+  function updateUndoRedo(){
+    document.getElementById('btnUndo').disabled=!History.canUndo();
+    document.getElementById('btnRedo').disabled=!History.canRedo();
+  }
+
+  return {featureStyle,restyle,afterHistory,updateUndoRedo,legend};
+})();
+
+/* ========= Map / Draw ========= */
+const MapUI=(()=>{
+  function init(){
+    // FORCE canvas mode for perf
+    State.map=L.map('map',{zoomControl:true,preferCanvas:true})
+      .setView([53.7267,-127.6476],5); // BC-ish default center
+
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{
+      maxZoom:19,
+      attribution:'&copy; OpenStreetMap'
+    }).addTo(State.map);
+
+    State.layers.asIs=L.geoJSON(null,{
+      style:UI.featureStyle('asIs'),
+      onEachFeature
+    });
+    State.layers.optimized=L.geoJSON(null,{
+      style:UI.featureStyle('optimized'),
+      onEachFeature
+    });
+    State.layers.asIs.addTo(State.map);
+
+    const drawCtrl=new L.Control.Draw({
+      draw:{
+        polyline:false,
+        polygon:{shapeOptions:{color:'#8ab4ff'}},
+        circle:false,
+        marker:false,
+        circlemarker:false,
+        rectangle:{shapeOptions:{color:'#8ab4ff'}}
+      },
+      edit:false
+    });
+
+    document.getElementById('btnSelectRect').onclick=()=>{
+      State.map.addControl(drawCtrl);
+      new L.Draw.Rectangle(State.map, drawCtrl.options.draw.rectangle).enable();
+    };
+    document.getElementById('btnSelectLasso').onclick=()=>{
+      State.map.addControl(drawCtrl);
+      new L.Draw.Polygon(State.map, drawCtrl.options.draw.polygon).enable();
+    };
+
+    State.map.on(L.Draw.Event.CREATED,e=>{
+      if(e.layerType==='rectangle'){
+        Selection.byBounds(e.layer.getBounds());
+      }else if(e.layerType==='polygon'){
+        const ring=e.layer.getLatLngs()[0].map(ll=>[ll.lng,ll.lat]);
+        Selection.byPolygon(ring);
+      }
+      State.map.removeControl(drawCtrl);
+    });
+  }
+
+  // PERF TWEAK:
+  // don't bind tooltip to every polygon up front
+  function bindLiveTooltip(layer, feature){
+    layer.on('mouseover',()=>{
+      // create/bind tooltip on demand
+      if(!layer.getTooltip()){
+        const code=feature.properties[State.propKey];
+        const bdr=State.assignments[State.currentView].get(Util.norm(code))||'—';
+        layer.bindTooltip(`${code} • BDR: ${bdr}`,{sticky:true}).openTooltip();
+      }
+    });
+  }
+
+  function onEachFeature(feature,layer){
+    layer.on('click',()=>{
+      const code=feature.properties[State.propKey];
+      if(!code)return;
+      const n=Util.norm(code);
+      if(State.selection.has(n))State.selection.delete(n);
+      else State.selection.add(n);
+      UI.restyle();
+    });
+
+    // delay tooltip (perf)
+    bindLiveTooltip(layer, feature);
+  }
+
+  function fitToCurrent(){
+    if(!State.shapes)return;
+    const fc=Shapes.currentFC();
+    const b=L.geoJSON(fc).getBounds();
+    if(b.isValid()) State.map.fitBounds(b.pad(0.05));
+  }
+
+  return {init,fitToCurrent};
+})();
+
+/* ========= Shapes ========= */
+const Shapes=(()=>{
+  function normalizeToFC(obj){
+    if(!obj)return null;
+    if(obj.type==='FeatureCollection')return obj;
+    if(Array.isArray(obj))
+      return {type:'FeatureCollection',features:obj.flatMap(g=>g.features||[])};
+    if(obj.features)
+      return {type:'FeatureCollection',features:obj.features};
+    return obj;
+  }
+
+  function buildIndex(){
+    State.featureByCode.clear();
+    if(!State.shapes||!State.propKey)return;
+    for(const f of State.shapes.features){
+      const code=Util.norm(f.properties[State.propKey]);
+      if(code)State.featureByCode.set(code,f);
+    }
+  }
+
+  function recomputeCentroidsOnce(){
+    if(State.centroidsReady) return;
+    State.centroidsByCode.clear();
+    if(!State.shapes||!State.propKey)return;
+    const n=State.shapes.features?.length||0;
+    State.lazyCentroids=n>20000;
+    if(State.lazyCentroids){
+      State.centroidsReady=true;
+      return;
+    }
+    for(const f of State.shapes.features){
+      const code=Util.norm(f.properties[State.propKey]);
+      if(!code)continue;
+      try{
+        const c=turf.centroid(f).geometry.coordinates;
+        State.centroidsByCode.set(code,c);
+      }catch{}
+    }
+    State.centroidsReady=true;
+  }
+
+  function ensureCentroid(code){
+  code = Util.norm(code);
+
+    // if we already have it cached, return it
+    if (State.centroidsByCode.has(code)) {
+        return State.centroidsByCode.get(code);
+    }
+
+    // if we're in lazy mode, compute on-demand now
+    const feat = State.featureByCode.get(code);
+    if (!feat) return null;
+
+    let coord = null;
+
+    // Try turf.centroid first
+    try {
+        const c = turf.centroid(feat).geometry.coordinates; // [lon, lat]
+        if (Array.isArray(c) && c.length === 2 && isFinite(c[0]) && isFinite(c[1])) {
+        coord = c;
+        }
+    } catch (e) {
+        // ignore here, we’ll fall back
+    }
+
+    // Fallback: bbox center if centroid threw or gave nonsense
+    if (!coord) {
+        try {
+        const bbox = turf.bbox(feat); // [minX,minY,maxX,maxY]
+        const midLon = (bbox[0] + bbox[2]) / 2;
+        const midLat = (bbox[1] + bbox[3]) / 2;
+        coord = [midLon, midLat];
+        } catch (e) {
+        coord = null;
+        }
+    }
+
+    // Cache even fallback so we don't recompute
+    if (coord) {
+        State.centroidsByCode.set(code, coord);
+        return coord;
+    }
+
+    return null;
+    }
+
+
+  function autoPickPropKey(){
+    const sel=document.getElementById('propKeySelect');
+    sel.innerHTML='';
+    if(!State.shapes?.features?.length){
+      sel.disabled=true;return;
+    }
+    const props=Object.keys(State.shapes.features[0].properties||{});
+    props.forEach(k=>{
+      const o=document.createElement('option');
+      o.value=k;
+      o.textContent=`Postal code property: ${k}`;
+      sel.appendChild(o);
+    });
+    const guess=props.find(p=>/post.*code|postal|zipcode|zip|pcode|pc|cfsa?uid|p_code/i.test(p))||props[0];
+    sel.value=guess;
+    State.propKey=guess;
+    sel.onchange=()=>{
+      State.propKey=sel.value;
+      State.centroidsReady=false;
+      renderLayers(true);
+    };
+  }
+
+  function currentFC(){
+    if(!State.shapes)return {type:'FeatureCollection',features:[]};
+    if(!State.activeCodes || !State.activeCodes.size) return State.shapes;
+    const feats=State.shapes.features.filter(f=>{
+      const code=Util.norm(f.properties[State.propKey]);
+      return State.activeCodes.has(code);
+    });
+    return {type:'FeatureCollection',features:feats};
+  }
+
+  function renderLayers(fullRefresh=false){
+    State.layers.asIs.clearLayers();
+    State.layers.optimized.clearLayers();
+    const fc=currentFC();
+    State.layers.asIs.addData(fc);
+    State.layers.optimized.addData(fc);
+
+    if(fullRefresh){
+      buildIndex();
+      State.centroidsReady=false;
+    }
+    buildIndex();
+    recomputeCentroidsOnce();
+
+    UI.restyle();
+    if(!_justFiltered){
+      MapUI.fitToCurrent();
+    }
+  }
+
+  return {normalizeToFC,autoPickPropKey,renderLayers,currentFC,ensureCentroid,recomputeCentroidsOnce,buildIndex};
+})();
+
+/* ========= Data IO ========= */
+const DataIO=(()=>{
+  function parseCSV(text){
+    const first=text.split(/\r?\n/).find(l=>l.trim().length>0)||'';
+    const delim=first.includes('\t')?'\t':',';
+    const lines=text.split(/\r?\n/).filter(l=>l.trim().length>0);
+
+    const header=lines
+      .shift()
+      .split(delim)
+      .map(h=>h.replace(/^"|"$/g,'').trim());
+
+    return lines.map(l=>{
+      const cols=l.split(delim).map(c=>c.replace(/^"|"$/g,'').trim());
+      const o={};
+      header.forEach((h,i)=>{
+        o[h]=cols[i]??'';
+      });
+      return o;
+    });
+  }
+
+  async function readFileToRows(file){
+    const name=file.name.toLowerCase();
+    if(name.endsWith('.xlsx')||name.endsWith('.xls')){
+      const buf=await file.arrayBuffer();
+      const wb=XLSX.read(buf,{type:'array'});
+      return XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]],{defval:''});
+    }
+    if(name.endsWith('.json')){
+      return JSON.parse(await file.text());
+    }
+    return parseCSV(await file.text());
+  }
+
+  function buildFromRows(rows){
+    if(!rows.length){alert("No rows found");return null;}
+    const lowerCols=Object.keys(rows[0]).map(x=>x.toLowerCase());
+
+    function pick(possible){
+      for(const c of lowerCols){
+        if(possible.includes(c)){
+          return Object.keys(rows[0])[lowerCols.indexOf(c)];
+        }
+      }
+      return null;
+    }
+
+    const pcKey = pick([
+      'postal_code','postcode','zip','zipcode','pc',
+      'poc postal code','poc_postal_code'
+    ]);
+    const bdrKey= pick([
+      'bdr','rep',
+      'sales territory person responsible',
+      'salesforce core person responsible'
+    ]);
+    const pocKey= pick([
+      'poc code','poc_code','poccode','poc','poc id'
+    ]);
+    const volKey= pick([
+      'volume threshold','volume_threshold','volumethreshold'
+    ]);
+
+    if(!pcKey||!bdrKey){
+      alert('Need at least postal_code and bdr columns.');
+      return null;
+    }
+
+    const assignMap=new Map();
+    const metaMap=new Map();
+
+    for(const r of rows){
+      let code=(r[pcKey]??'').toString();
+      let bdr=(r[bdrKey]??'').toString().trim();
+      const poc=(pocKey? r[pocKey] : '');
+      const vol=(volKey? r[volKey] : '');
+
+      if(document.getElementById('chkNormalize').checked){
+        code=Util.norm(code);
+      }
+      if(document.getElementById('chkFSA').checked){
+        code=code.slice(0,3);
+      }
+
+      if(code){
+        assignMap.set(code,bdr);
+
+        if(!metaMap.has(code)){
+          metaMap.set(code,{
+            pocCodes:new Set(),
+            volTh:vol||""
+          });
+        }
+        const mm=metaMap.get(code);
+        if(poc){ mm.pocCodes.add(String(poc)); }
+        if(vol){ mm.volTh = vol; }
+      }
+    }
+
+    return {assignMap,metaMap};
+  }
+
+  function exportCSV(){
+    const map=State.assignments[State.currentView];
+    const rows=['postal_code,bdr'];
+    for(const [c,b]of map.entries()){
+      rows.push(`${c},${b||''}`);
+    }
+    const blob=new Blob([rows.join('\n')],{type:'text/csv'});
+    const a=document.createElement('a');
+    a.href=URL.createObjectURL(blob);
+    a.download=`assignments_${State.currentView}.csv`;
+    a.click();
+  }
+
+  function saveProject(){
+    const proj={
+      propKey:State.propKey,
+      shapes:State.shapes,
+      assignments:{
+        asIs:[...State.assignments.asIs.entries()],
+        optimized:[...State.assignments.optimized.entries()]
+      },
+      postalMeta:[...State.postalMeta.entries()].map(([pc,meta])=>({
+        pc,
+        pocCodes:[...meta.pocCodes],
+        volTh:meta.volTh
+      })),
+      activeCodes:State.activeCodes?[...State.activeCodes]:null
+    };
+    const blob=new Blob([JSON.stringify(proj)],{type:'application/json'});
+    const a=document.createElement('a');
+    a.href=URL.createObjectURL(blob);
+    a.download='territory_project.json';
+    a.click();
+  }
+
+  function loadProject(){
+    const inp=document.createElement('input');
+    inp.type='file';
+    inp.accept='.json';
+    inp.onchange=async e=>{
+      const f=e.target.files[0];
+      if(!f)return;
+      History.push('Before Load Project');
+      const proj=JSON.parse(await f.text());
+      State.propKey=proj.propKey;
+      State.shapes=proj.shapes;
+      State.assignments.asIs=new Map(proj.assignments.asIs||[]);
+      State.assignments.optimized=new Map(proj.assignments.optimized||[]);
+      State.postalMeta=new Map(
+        (proj.postalMeta||[]).map(obj=>[
+          obj.pc,
+          {pocCodes:new Set(obj.pocCodes||[]),volTh:obj.volTh||""}
+        ])
+      );
+      State.activeCodes = proj.activeCodes?new Set(proj.activeCodes):null;
+
+      Shapes.autoPickPropKey();
+      Shapes.renderLayers(true);
+      Stats.render();
+      Mismatch.render();
+      Filter.refreshOptions();
+      Filter.apply();
+      Assignment.refreshBDRDropdown();
+    };
+    inp.click();
+  }
+
+  return {
+    parseCSV,readFileToRows,buildFromRows,exportCSV,saveProject,loadProject
+  };
+})();
+
+/* ========= Assignment ========= */
+const Assignment=(()=>{
+  function refreshBDRDropdown(){
+    const sel=document.getElementById('bdrNameSelect');
+    if(!sel)return;
+    const prev=sel.value;
+    const bdrSet=new Set([
+      ...[...State.assignments.asIs.values()].filter(Boolean),
+      ...[...State.assignments.optimized.values()].filter(Boolean)
+    ]);
+    sel.innerHTML='<option value="__custom__">New / Custom…</option>' +
+      [...bdrSet].sort().map(b=>`<option value="${b}">${b}</option>`).join('');
+    if([...bdrSet,'__custom__'].includes(prev)){
+      sel.value=prev;
+    }
+  }
+
+  function getSelectedBDR(){
+    const sel=document.getElementById('bdrNameSelect');
+    const txt=document.getElementById('bdrName').value.trim();
+    if(!sel) return txt;
+    if(sel.value && sel.value!=='__custom__'){
+      return sel.value;
+    }
+    return txt;
+  }
+
+  return {refreshBDRDropdown,getSelectedBDR};
+})();
+
+/* ========= Selection ========= */
+const Selection=(()=>{
+  function currentLayer(){
+    return State.currentView==='asIs'?State.layers.asIs:State.layers.optimized;
+  }
+  function byBounds(bounds){
+    State.selection.clear();
+    currentLayer().eachLayer(l=>{
+      if(!l.feature)return;
+      const g=l.getBounds?.();
+      if(g&&bounds.intersects(g)){
+        const code=l.feature.properties[State.propKey];
+        if(code)State.selection.add(Util.norm(code));
+      }
+    });
+    UI.restyle();
+  }
+  function byPolygon(r){
+    if(r.length&&(r[0][0]!==r.at(-1)[0]||r[0][1]!==r.at(-1)[1]))
+      r.push([...r[0]]);
+    const poly=turf.polygon([r]);
+    State.selection.clear();
+    currentLayer().eachLayer(l=>{
+      const code=l?.feature?.properties?.[State.propKey];
+      if(!code)return;
+      try{
+        const c=turf.centroid(l.feature).geometry.coordinates;
+        if(turf.booleanPointInPolygon(turf.point(c),poly)){
+          State.selection.add(Util.norm(code));
+        }
+      }catch{}
+    });
+    UI.restyle();
+  }
+  function clearSel(){
+    State.selection.clear();
+    UI.restyle();
+  }
+  function assignTo(bdr){
+    if(!bdr){alert('Enter / choose BDR');return;}
+    if(State.selection.size===0){
+      alert('Select polygons first');return;
+    }
+    History.push('Before Assign');
+    const map=State.assignments[State.currentView];
+    for(const code of State.selection){
+      map.set(code,bdr);
+    }
+    Util.colorForBDR(bdr);
+    UI.restyle();
+    Stats.render();
+    Mismatch.render();
+    Filter.refreshOptions();
+    Filter.apply();
+    Assignment.refreshBDRDropdown();
+  }
+  return {byBounds,byPolygon,clearSel,assignTo};
+})();
+
+/* ========= Stats ========= */
+const Stats = (() => {
+  function calc() {
+    const map = State.assignments[State.currentView];
+    const bucketByBDR = new Map(); 
+    // structure: bdr -> { postals:Set, pocCodes:Set, volThs:[], coords:[ [lon,lat], ... ] }
+
+    for (const [pc, bdr] of map.entries()) {
+      if (!bdr) continue;
+      if (!bucketByBDR.has(bdr)) {
+        bucketByBDR.set(bdr, {
+          postals: new Set(),
+          pocCodes: new Set(),
+          volThs: [],
+          coords: []
+        });
+      }
+      const b = bucketByBDR.get(bdr);
+
+      b.postals.add(pc);
+
+      // capture POC codes + volume threshold info from uploaded meta
+      const meta = State.postalMeta.get(pc);
+      if (meta) {
+        if (meta.pocCodes) {
+          meta.pocCodes.forEach(p => b.pocCodes.add(p));
+        }
+        if (meta.volTh) {
+          b.volThs.push(meta.volTh);
+        }
+      }
+
+      // get centroid (lon,lat) with fallback
+      const c = State.centroidsReady
+        ? State.centroidsByCode.get(pc)
+        : Shapes.ensureCentroid(pc);
+      if (c && Array.isArray(c) && c.length === 2) {
+        b.coords.push(c);
+      }
+    }
+
+    const rows = [];
+
+    for (const [bdr, b] of bucketByBDR) {
+      // compute "center" of BDR footprint = avg lon/lat of all postals assigned
+      let cx = 0, cy = 0, n = 0;
+      b.coords.forEach(([lon, lat]) => {
+        cx += lon;
+        cy += lat;
+        n++;
+      });
+      if (n > 0) {
+        cx /= n;
+        cy /= n;
+      }
+
+      // compute distance from each postal to that center, in km
+      // (this is our proxy for route spread / travel burden)
+      const distKm = [];
+      if (n > 0) {
+        for (const [lon, lat] of b.coords) {
+          try {
+            const d = turf.distance(
+              turf.point([lon, lat]),
+              turf.point([cx, cy]),
+              { units: "kilometers" }
+            );
+            if (isFinite(d)) distKm.push(d);
+          } catch (e) {
+            // ignore bad geometry
+          }
+        }
+      }
+
+      let minKm = 0,
+          maxKm = 0,
+          avgKm = 0;
+      if (distKm.length > 0) {
+        minKm = Math.min(...distKm);
+        maxKm = Math.max(...distKm);
+        avgKm = distKm.reduce((a, c) => a + c, 0) / distKm.length;
+      }
+
+      rows.push({
+        bdr,
+        pocCount: b.pocCodes.size,
+        postalCount: b.postals.size,
+        volMode: Util.mode(b.volThs),
+        minKm: Util.round(minKm),
+        maxKm: Util.round(maxKm),
+        avgKm: Util.round(avgKm),
+        minMin: Util.kmToMin(minKm),
+        maxMin: Util.kmToMin(maxKm),
+        avgMin: Util.kmToMin(avgKm)
+      });
+    }
+
+    // sort nicely by BDR name
+    return rows.sort((a, b) => a.bdr.localeCompare(b.bdr));
+  }
+
+  function render() {
+    const body = document.getElementById("statsBody");
+
+    // if we don't have shapes/propKey, show hint
+    if (!State.shapes || !State.propKey) {
+      body.innerHTML =
+        `<tr><td colspan="10" style="color:#9da3af">Load shapes and assignments…</td></tr>`;
+      return;
+    }
+
+    const rows = calc();
+    if (!rows.length) {
+      body.innerHTML =
+        `<tr><td colspan="10" style="color:#9da3af">No BDR assignments yet.</td></tr>`;
+      return;
+    }
+
+    body.innerHTML = rows
+      .map(
+        r => `
+        <tr data-bdr="${r.bdr}">
+          <td>${r.bdr}</td>
+          <td>${r.pocCount}</td>
+          <td>${r.postalCount}</td>
+          <td>${r.volMode || ""}</td>
+          <td>${r.minKm}</td>
+          <td>${r.maxKm}</td>
+          <td>${r.avgKm}</td>
+          <td>${r.minMin}</td>
+          <td>${r.maxMin}</td>
+          <td>${r.avgMin}</td>
+        </tr>
+      `
+      )
+      .join("");
+
+    // Click row → auto-filter map to that BDR
+    Array.from(body.querySelectorAll("tr[data-bdr]")).forEach(tr => {
+      tr.addEventListener("click", () => {
+        const selBDR = tr.getAttribute("data-bdr");
+
+        // push that BDR into the filter inputs
+        document.getElementById("filterBDR").value = selBDR;
+        document.getElementById("filterBDRText").value = "";
+        document.getElementById("filterPostal").value = "ALL";
+        document.getElementById("filterPostalText").value = "";
+        document.getElementById("filterVolTh").value = "ALL";
+        document.getElementById("filterVolThText").value = "";
+
+        // run filter and zoom
+        Filter.apply();
+      });
+    });
+  }
+
+  return { render };
+})();
+
+/* ========= Mismatch ========= */
+const Mismatch=(()=>{
+  function render(){
+    const div=document.getElementById('mismatch');
+    if(!State.shapes||!State.propKey){
+      div.style.display='none';
+      return;
+    }
+    const known=new Set([...State.featureByCode.keys()]);
+    const cur=State.assignments[State.currentView];
+    const bad=[];
+    for(const code of cur.keys()){
+      if(!known.has(Util.norm(code)))bad.push(code);
+    }
+    if(bad.length){
+      const sample=bad.slice(0,25).join(', ');
+      div.style.display='block';
+      div.innerHTML=
+        `${bad.length} not found. Example: ${sample}${bad.length>25?'…':''}`;
+    }else{
+      div.style.display='none';
+      div.textContent='';
+    }
+  }
+  return {render};
+})();
+
+/* ========= Filter ========= */
+const Filter=(()=>{
+  function init(){
+    document.getElementById('btnApplyFilter').onclick=apply;
+    document.getElementById('btnClearFilter').onclick=()=>{
+      document.getElementById('filterBDR').value='ALL';
+      document.getElementById('filterBDRText').value='';
+      document.getElementById('filterPostal').value='ALL';
+      document.getElementById('filterPostalText').value='';
+      document.getElementById('filterVolTh').value='ALL';
+      document.getElementById('filterVolThText').value='';
+      State.activeCodes=null;
+      _justFiltered = true;
+      Shapes.renderLayers(false);
+      UI.restyle();
+      Stats.render();
+      Mismatch.render();
+      MapUI.fitToCurrent();
+    };
+  }
+
+  function refreshOptions(){
+    const bdrSel=document.getElementById('filterBDR');
+    const pcSel =document.getElementById('filterPostal');
+    const volSel=document.getElementById('filterVolTh');
+    if(!bdrSel||!pcSel||!volSel)return;
+
+    const bdrSet=new Set([
+      ...[...State.assignments.asIs.values()].filter(Boolean),
+      ...[...State.assignments.optimized.values()].filter(Boolean)
+    ]);
+
+    const pcSet=new Set();
+    if(State.shapes && State.propKey){
+      State.shapes.features.forEach(f=>{
+        const code=Util.norm(f.properties[State.propKey]);
+        if(code) pcSet.add(code);
+      });
+    }
+
+    const volSet=new Set();
+    for(const [,meta] of State.postalMeta.entries()){
+      if(meta.volTh) volSet.add(meta.volTh);
+    }
+
+    function fillSelect(sel,set,label){
+      const old=sel.value;
+      sel.innerHTML=`<option value="ALL">${label}</option>`+
+        [...set].sort().map(v=>`<option value="${v}">${v}</option>`).join('');
+      if([...set,'ALL'].includes(old)) sel.value=old;
+    }
+
+    fillSelect(bdrSel,bdrSet,'All BDRs');
+    fillSelect(pcSel,pcSet,'All Postal Codes');
+    fillSelect(volSel,volSet,'All Volume Thresholds');
+
+    Assignment.refreshBDRDropdown();
+  }
+
+  function containsCI(hay,needle){
+    return hay.toLowerCase().includes(needle.toLowerCase());
+  }
+
+  function allowedCodes(){
+    const bdrValDrop   = document.getElementById('filterBDR').value;
+    const bdrValText   = document.getElementById('filterBDRText').value.trim();
+    const pcValDrop    = document.getElementById('filterPostal').value;
+    const pcValText    = document.getElementById('filterPostalText').value.trim();
+    const volValDrop   = document.getElementById('filterVolTh').value;
+    const volValText   = document.getElementById('filterVolThText').value.trim();
+
+    let codes=null;
+
+    // BDR filter
+    if(bdrValText){
+      codes=new Set();
+      const map=State.assignments[State.currentView];
+      for(const [code,bdr] of map.entries()){
+        if(bdr && containsCI(bdr,bdrValText)){
+          codes.add(Util.norm(code));
+        }
+      }
+    } else if(bdrValDrop && bdrValDrop!=='ALL'){
+      codes=new Set();
+      const map=State.assignments[State.currentView];
+      for(const [code,bdr] of map.entries()){
+        if(bdr===bdrValDrop) codes.add(Util.norm(code));
+      }
+    }
+
+    // Postal filter
+    if(pcValText){
+      const wanted = pcValText.toUpperCase();
+      const theseCodes=new Set();
+      const map=State.assignments[State.currentView];
+      for(const [code,_bdr] of map.entries()){
+        if(code && code.toUpperCase().includes(wanted)){
+          theseCodes.add(Util.norm(code));
+        }
+      }
+      if(codes){
+        codes=new Set([...codes].filter(c=>theseCodes.has(c)));
+      }else{
+        codes=theseCodes;
+      }
+    } else if(pcValDrop && pcValDrop!=='ALL'){
+      const ncode=Util.norm(pcValDrop);
+      if(codes){
+        codes=new Set([...codes].filter(c=>c===ncode));
+      }else{
+        codes=new Set([ncode]);
+      }
+    }
+
+    // Volume Threshold filter
+    if(volValText){
+      const theseCodes=new Set();
+      for(const [pc,meta] of State.postalMeta.entries()){
+        if(meta.volTh && containsCI(meta.volTh,volValText)){
+          theseCodes.add(Util.norm(pc));
+        }
+      }
+      if(codes){
+        codes=new Set([...codes].filter(c=>theseCodes.has(c)));
+      }else{
+        codes=theseCodes;
+      }
+    } else if(volValDrop && volValDrop!=='ALL'){
+      const volCodes=new Set();
+      for(const [pc,meta] of State.postalMeta.entries()){
+        if(meta.volTh===volValDrop){
+          volCodes.add(Util.norm(pc));
+        }
+      }
+      if(codes){
+        codes=new Set([...codes].filter(c=>volCodes.has(c)));
+      }else{
+        codes=volCodes;
+      }
+    }
+
+    return codes;
+  }
+
+  function apply(){
+    const setCodes=allowedCodes();
+    if(setCodes && !setCodes.size){
+      alert('No postal codes match that filter.');
+    }
+    State.activeCodes=(setCodes && setCodes.size)?setCodes:null;
+
+    _justFiltered = true;
+    Shapes.renderLayers(false);
+    UI.restyle();
+    Stats.render();
+    Mismatch.render();
+    MapUI.fitToCurrent();
+  }
+
+  return {init,refreshOptions,apply};
+})();
+
+/* ========= Async loader with spinner ========= */
+async function loadCountryLayer(code){
+  let url=null;
+  if(code==="bc"){
+    url = DEFAULT_BC_GEOJSON_URL;
+  } else {
+    url = DEFAULT_BC_GEOJSON_URL;
+  }
+  if(!url) return;
+
+  showLoading("Loading BC shapes…");
+
+  try{
+    const res=await fetch(url);
+    if(!res.ok) throw new Error("HTTP "+res.status);
+    const gj=await res.json();
+
+    State.shapes=Shapes.normalizeToFC(gj);
+    Shapes.autoPickPropKey();
+    Shapes.renderLayers(true);
+    History.push('After Auto Country Load '+code);
+
+    Stats.render();
+    Mismatch.render();
+    Filter.refreshOptions();
+    Filter.apply();
+    Assignment.refreshBDRDropdown();
+  }catch(err){
+    console.warn("Auto-load failed:",err);
+  }finally{
+    hideLoading();
+  }
+}
+
+/* ========= Loading overlay helpers ========= */
+function showLoading(msg){
+  const overlay=document.getElementById('loadingOverlay');
+  const text=document.getElementById('loadingMsg');
+  if(text) text.textContent=msg||"Loading…";
+  overlay.classList.add('active');
+}
+function hideLoading(){
+  const overlay=document.getElementById('loadingOverlay');
+  overlay.classList.remove('active');
+}
+
+/* ========= Init App ========= */
+(function initApp(){
+  MapUI.init();
+
+  // Tabs
+  Array.from(document.querySelectorAll('#viewTabs .tab')).forEach(tab=>{
+    tab.onclick=()=>{
+      document.querySelectorAll('#viewTabs .tab').forEach(t=>t.classList.remove('active'));
+      tab.classList.add('active');
+      State.currentView=tab.dataset.view;
+      State.selection.clear();
+
+      if(State.currentView==='asIs'){
+        if(State.map.hasLayer(State.layers.optimized)) State.map.removeLayer(State.layers.optimized);
+        if(!State.map.hasLayer(State.layers.asIs)) State.layers.asIs.addTo(State.map);
+      }else{
+        if(State.map.hasLayer(State.layers.asIs)) State.map.removeLayer(State.layers.asIs);
+        if(!State.map.hasLayer(State.layers.optimized)) State.layers.optimized.addTo(State.map);
+      }
+
+      UI.restyle();
+      Stats.render();
+      Mismatch.render();
+      Filter.refreshOptions();
+      Filter.apply();
+    };
+  });
+
+  // Undo / Redo
+  document.getElementById('btnUndo').onclick=()=>{History.undo();};
+  document.getElementById('btnRedo').onclick=()=>{History.redo();};
+  window.addEventListener('keydown',e=>{
+    const mac=navigator.platform.toLowerCase().includes('mac');
+    const mod=mac?e.metaKey:e.ctrlKey;
+    if(mod && !e.shiftKey && e.key.toLowerCase()==='z'){
+      e.preventDefault();History.undo();
+    }
+    if((mod && e.key.toLowerCase()==='y') || (mod && e.shiftKey && e.key.toLowerCase()==='z')){
+      e.preventDefault();History.redo();
+    }
+  });
+
+  // Manual shape load (file)
+  document.getElementById('shapeFile').addEventListener('change',async e=>{
+    const f=e.target.files[0];
+    if(!f)return;
+    showLoading("Loading custom shapes…");
+    try{
+      let gj;
+      if(f.name.endsWith('.zip')) gj=await shp(f);
+      else gj=JSON.parse(await f.text());
+      State.shapes=Shapes.normalizeToFC(gj);
+      Shapes.autoPickPropKey();
+      Shapes.renderLayers(true);
+      History.push('After Load Shapes (File)');
+      Stats.render();
+      Mismatch.render();
+      Filter.refreshOptions();
+      Filter.apply();
+      Assignment.refreshBDRDropdown();
+    }catch(err){
+      console.error(err);
+      alert('Failed to read shapes: '+err.message);
+    }finally{
+      hideLoading();
+    }
+  });
+
+  // Manual shape load (URL)
+  document.getElementById('btnLoadUrl').onclick=async()=>{
+    const url=document.getElementById('shapeUrl').value.trim();
+    if(!url){alert('Paste a GeoJSON URL');return;}
+    showLoading("Loading shapes from URL…");
+    try{
+      const res=await fetch(url);
+      if(!res.ok) throw new Error('HTTP '+res.status);
+      const gj=await res.json();
+      State.shapes=Shapes.normalizeToFC(gj);
+      Shapes.autoPickPropKey();
+      Shapes.renderLayers(true);
+      History.push('After Load Shapes (URL)');
+      Stats.render();
+      Mismatch.render();
+      Filter.refreshOptions();
+      Filter.apply();
+      Assignment.refreshBDRDropdown();
+    }catch(err){
+      console.error(err);
+      alert('Failed to fetch GeoJSON: '+err.message);
+    }finally{
+      hideLoading();
+    }
+  };
+
+  // Country dropdown (future multi-region support)
+  document.getElementById('countrySelect').addEventListener('change',e=>{
+    const val=e.target.value;
+    loadCountryLayer(val);
+  });
+
+  // Upload file of assignments+POC info
+  document.getElementById('bdrCsv').addEventListener('change',async e=>{
+    const f=e.target.files[0];
+    if(!f)return;
+    try{
+      const rows=await DataIO.readFileToRows(f);
+      const built=DataIO.buildFromRows(rows);
+      if(!built)return;
+      History.push('Before Import Assignments');
+      State.assignments.asIs=built.assignMap;
+      State.postalMeta=built.metaMap;
+
+      for(const b of new Set([...built.assignMap.values()].filter(Boolean))){
+        Util.colorForBDR(b);
+      }
+
+      UI.restyle();
+      Stats.render();
+      Mismatch.render();
+      Filter.refreshOptions();
+      Filter.apply();
+      Assignment.refreshBDRDropdown();
+    }catch(err){
+      console.error(err);
+      alert('Failed to read assignments: '+err.message);
+    }
+  });
+
+  // Paste data
+  document.getElementById('btnLoadPaste').onclick=()=>{
+    const text=(document.getElementById('pasteData').value||'').trim();
+    if(!text){alert('Paste data first');return;}
+    try{
+      const rows=DataIO.parseCSV(text);
+      const built=DataIO.buildFromRows(rows);
+      if(!built)return;
+      History.push('Before Paste Assignments');
+      State.assignments.asIs=built.assignMap;
+      State.postalMeta=built.metaMap;
+
+      for(const b of new Set([...built.assignMap.values()].filter(Boolean))){
+        Util.colorForBDR(b);
+      }
+
+      UI.restyle();
+      Stats.render();
+      Mismatch.render();
+      Filter.refreshOptions();
+      Filter.apply();
+      Assignment.refreshBDRDropdown();
+    }catch(err){
+      console.error(err);
+      alert('Could not parse pasted data: '+err.message);
+    }
+  };
+
+  // Template
+  document.getElementById('btnTemplate').onclick=()=>{
+    const csv='postal_code,bdr,poc_code,volume_threshold\nV3R,BDR A,3001740,High\nV4A,BDR A,3002158,High\nV3W,BDR B,3002406,Low\n';
+    const blob=new Blob([csv],{type:'text/csv'});
+    const a=document.createElement('a');
+    a.href=URL.createObjectURL(blob);
+    a.download='territory_template.csv';
+    a.click();
+  };
+
+  // Clear Assignments (As-Is)
+  document.getElementById('btnClearAssign').onclick=()=>{
+    const n=State.assignments.asIs.size;
+    if(!n){alert('Nothing to clear');return;}
+    if(!confirm(`Clear ${n} assignment(s) in As-Is? (Undo available)`))return;
+    History.push('Before Clear Assignments');
+    State.assignments.asIs=new Map();
+    UI.restyle();
+    Stats.render();
+    Mismatch.render();
+    Filter.refreshOptions();
+    Filter.apply();
+    Assignment.refreshBDRDropdown();
+  };
+
+  // Selection actions
+  document.getElementById('btnClearSelection').onclick=Selection.clearSel;
+  document.getElementById('btnAssign').onclick=()=>{
+    const targetBDR = Assignment.getSelectedBDR();
+    Selection.assignTo(targetBDR);
+  };
+
+  // Copy As-Is → Optimized
+  document.getElementById('btnCopyToOptimized').onclick=()=>{
+    History.push('Before Seed Optimized');
+    State.assignments.optimized=new Map(State.assignments.asIs);
+    for(const b of new Set([...State.assignments.optimized.values()].filter(Boolean))){
+      Util.colorForBDR(b);
+    }
+    UI.restyle();
+    Stats.render();
+    Mismatch.render();
+    Filter.refreshOptions();
+    Filter.apply();
+    Assignment.refreshBDRDropdown();
+  };
+
+  // Recalc stats & export
+  document.getElementById('btnRecalc').onclick=()=>{
+    Stats.render();
+    Mismatch.render();
+  };
+  document.getElementById('btnExportCSV').onclick=DataIO.exportCSV;
+
+  // Save/Load project
+  document.getElementById('btnSaveProject').onclick=DataIO.saveProject;
+  document.getElementById('btnLoadProject').onclick=DataIO.loadProject;
+
+  // Filter
+  Filter.init();
+
+  // Init history + first render
+  History.init();
+  UI.updateUndoRedo();
+  Stats.render();
+  Mismatch.render();
+  Filter.refreshOptions();
+  Filter.apply();
+  Assignment.refreshBDRDropdown();
+
+  // === Auto-load BC shapes immediately on start ===
+  // Show spinner, then load from local file (bc_postal6_simplified.geojson)
+  (async () => {
+    showLoading("Loading BC shapes…");
+    try {
+      const res = await fetch("./bc_postal6_voronoi_dissolved.geojson");
+
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      const gj = await res.json();
+      State.shapes = Shapes.normalizeToFC(gj);
+      Shapes.autoPickPropKey();
+      Shapes.renderLayers(true);
+      History.push("After Auto-Load BC");
+
+      Stats.render();
+      Mismatch.render();
+      Filter.refreshOptions();
+      Filter.apply();
+      Assignment.refreshBDRDropdown();
+    } catch (err) {
+      console.error("Failed to auto-load BC:", err);
+      alert("Failed to auto-load BC territory layer: " + err.message);
+    } finally {
+      hideLoading();
+    }
+  })();
+})();
+
+</script>
+</body>
+</html>
