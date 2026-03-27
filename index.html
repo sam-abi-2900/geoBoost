@@ -107,6 +107,8 @@
       </div>
       <label style="margin-top:8px">Filter View by BDR</label>
       <select id="filterBDR" multiple></select>
+      <label style="margin-top:8px">Filter by Date</label>
+<input type="date" id="filterDate" />
       <div class="grid" style="margin-top:6px">
         <button id="btnApplyFilters" class="primary">Apply Filter</button>
         <button id="btnClearFilter" class="ghost">Reset Filter</button>
@@ -143,7 +145,14 @@
       <button id="btnExport" class="ghost" style="margin-bottom:8px">Export CSV</button>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>BDR</th><th>Count</th><th>Max km</th><th>Avg km</th></tr></thead>
+          <thead>
+<tr>
+  <th>BDR</th>
+  <th>Visits</th>
+  <th>Total km</th>
+  <th>Total Time (min)</th>
+</tr>
+</thead>
           <tbody id="statsBody"></tbody>
         </table>
       </div>
@@ -4236,6 +4245,8 @@ const EMBEDDED_MAP_DATA = `
 
 `;
 
+
+
 /* ======================================================= */
 
 /* --- Custom Math Functions (Replacing Turf.js) --- */
@@ -4341,6 +4352,12 @@ window.onload = () => {
   }, 500);
 };
 
+function formatDateSafe(dateStr){
+  const d = new Date(dateStr);
+  if(isNaN(d)) return null;
+  return d.toISOString().slice(0,10);
+}
+
 /* --- ROBUST MAP LOADER --- */
 function loadEmbeddedMap() {
   try {
@@ -4360,6 +4377,7 @@ function loadEmbeddedMap() {
     reloadShapes();
     document.getElementById('mapStatusText').innerHTML = "<b>Embedded Map Loaded</b>";
     document.getElementById('mapBadge').style.display = 'inline-block';
+    
   } catch (e) {
     console.warn("Embed load failed:", e);
     document.getElementById('manualShapeBox').style.display = 'block';
@@ -4424,20 +4442,85 @@ function reloadShapes(){
   restyle();
 }
 
+
+function applyAssignmentsNew(){
+  state.assignments.asIs.clear();
+
+  state.rawData.forEach(r => {
+    if(r.zip && r.bdr){
+      state.assignments.asIs.set(r.zip, r.bdr);
+    }
+  });
+
+  refreshDropdowns();
+  restyle();
+  renderSummary();
+  History.reset();
+}
+
 document.getElementById('bdrCsv').onchange = async e => {
   const f = e.target.files[0];
+
+  let raw = [];
+
   if(f.name.match(/\.xls/)){
-    const d=await f.arrayBuffer(), wb=XLSX.read(d,{type:'array'});
-    state.rawData = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]],{defval:''});
+    const d = await f.arrayBuffer();
+    const wb = XLSX.read(d,{type:'array'});
+    raw = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]],{defval:''});
   } else {
     const lines = (await f.text()).split(/\n/).filter(x=>x.trim());
     const h = lines[0].split(/[,\t]/).map(s=>s.trim());
-    state.rawData = lines.slice(1).map(l=>{
+    raw = lines.slice(1).map(l=>{
       const d=l.split(/[,\t]/).map(s=>s.trim());
       const o={}; h.forEach((k,i)=>o[k]=d[i]); return o;
     });
   }
-  initColumns();
+
+  // ✅ BASIC NORMALIZATION (NO POC YET)
+  state.rawData = raw.map(r => {
+    const zipRaw = String(r["ZIP"] || '');
+    const zip = zipRaw.substring(0,4).replace(/\D/g,'');
+
+    const bdr = String(r["M1 Name"] || '').trim();
+    let cleanDate = '';
+
+const raw = r["date"];
+
+// ✅ Case 1: Excel serial number
+if(typeof raw === "number"){
+  const excelEpoch = new Date(Date.UTC(1899, 11, 30));
+  const realDate = new Date(excelEpoch.getTime() + raw * 86400000);
+  cleanDate = realDate.toISOString().slice(0,10);
+}
+
+// ✅ Case 2: Already string
+else {
+  cleanDate = String(raw || '').split(" ")[0].trim();
+}
+
+    return {
+  zip: zip,
+  bdr: bdr,
+  originalBdr: bdr,
+
+  poc: String(r["POC Number"] || '').trim(), // ✅ ADD THIS
+
+  lat: parseFloat(r["latitude"]) || 0,
+  lon: parseFloat(r["longitude"]) || 0,
+  seq: parseInt(r["visit_sequence"]) || 0,
+  duration: parseFloat(r["Visit Duration"]) || 0,
+  travelTime: parseFloat(r["travel_time_min"]) || 0,
+  distance: parseFloat(r["distance_km"]) || 0,
+  date: cleanDate
+};
+  }).filter(r => 
+  r.zip && 
+  r.bdr && 
+  r.poc && 
+  r.poc.toLowerCase() !== "home"
+);
+
+  applyAssignmentsNew();
 };
 
 function initColumns(){
@@ -4505,6 +4588,11 @@ document.getElementById('btnAutoFill').onclick = () => {
       
       if(nearestBDR) {
         viewMap.set(gap.code, nearestBDR);
+        state.rawData.forEach(row => {
+  if(row.zip === gap.code){
+    row.bdr = nearestBDR;
+  }
+});
         fillCount++;
       }
     });
@@ -4566,18 +4654,48 @@ document.getElementById('btnSelectVisible').onclick=()=>{
   restyle();
 };
 
-document.getElementById('btnAssign').onclick=()=>{
-  const val = document.getElementById('bdrSelect').value || document.getElementById('bdrInput').value.trim();
+
+document.getElementById('btnAssign').onclick = () => {
+  const val = document.getElementById('bdrSelect').value || 
+              document.getElementById('bdrInput').value.trim();
+
   if(!val || !state.selection.size) return;
-  state.selection.forEach(c => state.assignments[state.currentView].set(c, val));
-  refreshDropdowns(); restyle(); renderSummary();
-  History.push(); 
+
+  // update map
+  state.selection.forEach(c => {
+    state.assignments[state.currentView].set(c, val);
+  });
+
+  // ✅ update dataset
+  state.rawData.forEach(row => {
+    if(state.selection.has(row.zip)){
+      row.bdr = val;
+    }
+  });
+
+  refreshDropdowns();
+  restyle();
+  renderSummary();
+
+  History.push();
 };
 
-document.getElementById('btnClearAssign').onclick=()=>{
-  state.selection.forEach(c => state.assignments[state.currentView].delete(c));
-  restyle(); renderSummary();
-  History.push(); 
+document.getElementById('btnClearAssign').onclick = () => {
+  state.selection.forEach(c => {
+    state.assignments[state.currentView].delete(c);
+  });
+
+  // update dataset
+  state.rawData.forEach(row => {
+    if(state.selection.has(row.zip)){
+      row.bdr = "";
+    }
+  });
+
+  restyle();
+  renderSummary();
+
+  History.push();
 };
 
 function styleFn(view){
@@ -4624,24 +4742,54 @@ function renderLegend(bdrs){
 
 function getActiveFilters(){ return new Set([...document.getElementById('filterBDR').selectedOptions].map(o=>o.value)); }
 
+const dateEl = document.getElementById('filterDate');
+if(dateEl){
+  dateEl.onchange = () => renderSummary();
+}
+
 function renderSummary(){
-  const body = document.getElementById('statsBody'), viewMap = state.assignments[state.currentView], filters = getActiveFilters(), byBDR = {};
-  for(const [c, b] of viewMap.entries()){
-    if(filters.size > 0 && !filters.has(b)) continue;
-    if(!byBDR[b]) byBDR[b] = [];
-    const pt = getCentroid(c); if(pt) byBDR[b].push(pt);
+  const body = document.getElementById('statsBody');
+  const selectedDate = document.getElementById('filterDate')?.value;
+  const filters = getActiveFilters();
+
+  const grouped = {};
+state.rawData.forEach(r => {
+  if(!r.bdr) return;
+  if(!r.date) return;
+
+  if(selectedDate){
+  const rowDate = (r.date || '').trim();
+  const filterDate = selectedDate.trim();
+  console.log("Row:", r.date, "Filter:", selectedDate);
+  if(rowDate !== filterDate) return;
+}
+  if(filters.size > 0 && !filters.has(r.bdr)) return;
+
+  const key = r.bdr; // 👈 grouping by BDR
+
+  if(!grouped[key]){
+    grouped[key] = {
+      bdr: r.bdr,
+      pocSet: new Set(),
+      totalDistance: 0,
+      totalTime: 0
+    };
   }
-  const rows = Object.keys(byBDR).sort().map(b => {
-    const pts = byBDR[b]; let maxD = 0, sumD = 0;
-    if(pts.length > 1){
-      const center = Utils.centroid({geometry:{type:"MultiPolygon", coordinates:[pts]}}); // Approx center of group
-      pts.forEach(p=>{ 
-         const d = Utils.distance(p, center || pts[0]); // Safe fallback
-         sumD += d; if(d > maxD) maxD = d; 
-      });
-    }
-    return `<tr><td>${b}</td><td>${pts.length}</td><td>${Math.round(maxD)} km</td><td>${Math.round(sumD/(pts.length||1))} km</td></tr>`;
-  });
+
+  grouped[key].pocSet.add(r.poc);
+  grouped[key].totalDistance += r.distance || 0;
+  grouped[key].totalTime += (r.travelTime || 0) + ((r.duration || 0) * 60);
+});
+
+  const rows = Object.values(grouped).map(g => `
+    <tr>
+      <td>${g.bdr}</td>
+      <td>${g.pocSet ? g.pocSet.size : 0}</td>
+      <td>${Math.round(g.totalDistance)} km</td>
+      <td>${Math.round(g.totalTime)} min</td>
+    </tr>
+  `);
+
   body.innerHTML = rows.join("");
 }
 
@@ -4651,10 +4799,23 @@ function restyle(){
 }
 
 document.getElementById('btnApplyFilters').onclick = () => { restyle(); renderSummary(); };
-document.getElementById('btnClearFilter').onclick = () => { 
+document.getElementById('btnClearFilter').onclick = () => {
+
+  // ✅ Reset BDR filter
   const sel = document.getElementById('filterBDR');
-  for(let i=0; i < sel.options.length; i++) sel.options[i].selected = false;
-  restyle(); renderSummary(); 
+  for(let i=0; i < sel.options.length; i++) {
+    sel.options[i].selected = false;
+  }
+
+  // ✅ Reset Date filter
+  const dateEl = document.getElementById('filterDate');
+  if(dateEl){
+    dateEl.value = "";
+  }
+
+  // ✅ Re-render everything
+  restyle();
+  renderSummary();
 };
 
 document.getElementById('viewTabs').onclick = e => {
@@ -4673,39 +4834,43 @@ document.getElementById('btnSeed').onclick = () => {
 };
 
 document.getElementById('btnExport').onclick = () => {
-  // 1. Define the specific headers you requested
-  let csv = "postcode,BDR_1,BDR_2,Status\n";
-  
-  // 2. We use the master list of shapes to ensure every postcode is captured
-  state.shapes.features.forEach(feature => {
-    const pc = feature.properties[state.propKey];
-    
-    // BDR_1 is the Original (As-Is) assignment
-    const bdr1 = state.assignments.asIs.get(pc) || "Unassigned";
-    
-    // BDR_2 is the New (Optimized) assignment 
-    const bdr2 = state.assignments.optimized.get(pc) || "Unassigned";
-    
-    // Logic for the Status column
-    let status = "Unchanged";
-    if (bdr1 === "Unassigned" && bdr2 !== "Unassigned") {
-        status = "New Assignment";
-    } else if (bdr1 !== bdr2) {
-        status = "Reassigned";
-    }
 
-    // Add the row to the CSV string
-    csv += `${pc},"${bdr1}","${bdr2}",${status}\n`;
+  let csv = "ZIP,BDR_1,BDR_2,Status\n";
+
+  const originalMap = new Map();
+
+  state.rawData.forEach(r => {
+    if(r.zip && r.originalBdr){
+      if(!originalMap.has(r.zip)){
+        originalMap.set(r.zip, r.originalBdr);
+      }
+    }
   });
 
-  // 3. Create and trigger the download
+  const currentMap = state.assignments[state.currentView];
+
+  state.shapeCodes.forEach(zip => {
+
+    const bdr1 = originalMap.get(zip) || "Unassigned";
+    const bdr2 = currentMap.get(zip) || "Unassigned";
+
+    let status = "Unchanged";
+
+    if (bdr1 === "Unassigned" && bdr2 !== "Unassigned") {
+      status = "New Assignment";
+    } else if (bdr1 !== bdr2) {
+      status = "Reassigned";
+    }
+
+    csv += `${zip},"${bdr1}","${bdr2}",${status}\n`;
+  });
+
   const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
   const link = document.createElement('a');
   const url = URL.createObjectURL(blob);
-  
+
   link.setAttribute('href', url);
   link.setAttribute('download', `Territory_Changes_${new Date().toISOString().slice(0,10)}.csv`);
-  link.style.visibility = 'hidden';
   document.body.appendChild(link);
   link.click();
   document.body.removeChild(link);
