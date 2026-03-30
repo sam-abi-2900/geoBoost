@@ -109,6 +109,10 @@
       <select id="filterBDR" multiple></select>
       <label style="margin-top:8px">Filter by Date</label>
 <input type="date" id="filterDate" />
+      <select id="viewMode">
+  <option value="daily">Daily</option>
+  <option value="monthly">Monthly</option>
+</select>
       <div class="grid" style="margin-top:6px">
         <button id="btnApplyFilters" class="primary">Apply Filter</button>
         <button id="btnClearFilter" class="ghost">Reset Filter</button>
@@ -148,9 +152,11 @@
           <thead>
 <tr>
   <th>BDR</th>
-  <th>Visits</th>
-  <th>Total km</th>
-  <th>Total Time (min)</th>
+<th>POCs</th>
+<th>Distance</th>
+<th>Visit Time</th>
+<th>Travel Time</th>
+<th>Workload %</th>
 </tr>
 </thead>
           <tbody id="statsBody"></tbody>
@@ -4408,6 +4414,8 @@ window.connectPowerBI = function(dataArray) {
   setStatus(`Data Loaded (${dataArray.length} rows).`, "ok");
 };
 
+document.getElementById('viewMode').onchange = () => renderSummary();
+
 /* --- Data Handling --- */
 document.getElementById('shapeFile').onchange = async e => {
   const f = e.target.files[0];
@@ -4751,44 +4759,76 @@ function renderSummary(){
   const body = document.getElementById('statsBody');
   const selectedDate = document.getElementById('filterDate')?.value;
   const filters = getActiveFilters();
+  const mode = document.getElementById('viewMode')?.value || "daily";
 
   const grouped = {};
-state.rawData.forEach(r => {
-  if(!r.bdr) return;
-  if(!r.date) return;
 
-  if(selectedDate){
-  const rowDate = (r.date || '').trim();
-  const filterDate = selectedDate.trim();
-  console.log("Row:", r.date, "Filter:", selectedDate);
-  if(rowDate !== filterDate) return;
-}
-  if(filters.size > 0 && !filters.has(r.bdr)) return;
+  state.rawData.forEach(r => {
+    if(!r.bdr || !r.date) return;
 
-  const key = r.bdr; // 👈 grouping by BDR
+    if(mode === "daily"){
+      if(selectedDate){
+        if((r.date || '').trim() !== selectedDate.trim()) return;
+      }
+    }
 
-  if(!grouped[key]){
-    grouped[key] = {
-      bdr: r.bdr,
-      pocSet: new Set(),
-      totalDistance: 0,
-      totalTime: 0
-    };
-  }
+    if(filters.size > 0 && !filters.has(r.bdr)) return;
 
-  grouped[key].pocSet.add(r.poc);
-  grouped[key].totalDistance += r.distance || 0;
-  grouped[key].totalTime += (r.travelTime || 0) + ((r.duration || 0) * 60);
-});
+    const key = r.bdr;
 
-  const rows = Object.values(grouped).map(g => `
-    <tr>
-      <td>${g.bdr}</td>
-      <td>${g.pocSet ? g.pocSet.size : 0}</td>
-      <td>${Math.round(g.totalDistance)} km</td>
-      <td>${Math.round(g.totalTime)} min</td>
-    </tr>
-  `);
+    if(!grouped[key]){
+      grouped[key] = {
+        bdr: r.bdr,
+        pocSet: new Set(),
+        totalDistance: 0,
+        visitTime: 0,
+        travelTime: 0,
+        dateSet: new Set()
+      };
+    }
+
+    grouped[key].pocSet.add(r.poc);
+    grouped[key].totalDistance += r.distance || 0;
+
+    const visitMin = (r.duration || 0) * 60;
+    const travelMin = (r.travelTime || 0);
+
+    grouped[key].visitTime += visitMin;
+    grouped[key].travelTime += travelMin;
+
+    grouped[key].dateSet.add(r.date);
+  });
+
+  const rows = Object.values(grouped).map(g => {
+
+    const totalWorkMin = g.visitTime + g.travelTime;
+
+    let capacityMin;
+
+    if(mode === "daily"){
+      capacityMin = 8 * 60;
+    } else {
+      const workingDays = g.dateSet.size || 1;
+      capacityMin = workingDays * 8 * 60;
+    }
+
+    const workload = capacityMin > 0 
+      ? ((totalWorkMin / capacityMin) * 100).toFixed(1)
+      : 0;
+
+    const color = workload > 90 ? 'red' : workload > 70 ? 'orange' : 'green';
+
+    return `
+      <tr>
+        <td>${g.bdr}</td>
+        <td>${g.pocSet.size}</td>
+        <td>${Math.round(g.totalDistance)} km</td>
+        <td>${Math.round(g.visitTime)} min</td>
+        <td>${Math.round(g.travelTime)} min</td>
+        <td style="color:${color}"><b>${workload}%</b></td>
+      </tr>
+    `;
+  });
 
   body.innerHTML = rows.join("");
 }
