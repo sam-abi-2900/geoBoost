@@ -66,11 +66,11 @@
 <body>
 <div class="app">
   <aside>
-    <h1>GeoBoost <span id="pbiBadge" class="pbi-badge">PBI DATA</span> <span id="mapBadge" class="map-badge">EMBED MAP</span></h1>
-    <div class="sub">Integrated Strategic Planning Tool</div>
+    <h1>GeoBoost | GBS Commercial<span id="pbiBadge" class="pbi-badge">PBI DATA</span> <span id="mapBadge"></span></h1>
+    <div class="sub">Dynamic Territory Management Tool</div>
     <div id="statusBox" class="status-msg"></div>
 
-    <div class="card">
+    <!-- <div class="card">
       <div class="tabs" id="viewTabs">
         <div class="tab active" data-view="asIs">As-Is</div>
         <div class="tab" data-view="optimized">Optimized</div>
@@ -79,7 +79,7 @@
         <button id="btnSeed" class="ghost">Seed Optimized</button>
         <button id="btnSaveProj" class="ghost">Save Project</button>
       </div>
-    </div>
+    </div> -->
 
     <div class="card">
       <label>1. Map Shapes (Auto-Loaded)</label>
@@ -111,7 +111,7 @@
 <input type="date" id="filterDate" />
       <select id="viewMode">
   <option value="daily">Daily</option>
-  <option value="monthly">Monthly</option>
+  <!-- <option value="monthly">Monthly</option> -->
 </select>
       <div class="grid" style="margin-top:6px">
         <button id="btnApplyFilters" class="primary">Apply Filter</button>
@@ -285,7 +285,8 @@ async function loadEmbeddedMap() {
   try {
     const url = "https://sam-abi-2900.github.io/geoBoostV2/NL.json";
 
-    const response = await fetch(url + "?t=" + Date.now()); // cache-buster
+    // const response = await fetch(url + "?t=" + Date.now()); // cache-buster
+    const response = await fetch(url); // cache-buster
 
     if (!response.ok) {
       throw new Error(`HTTP error! Status: ${response.status}`);
@@ -330,7 +331,16 @@ async function loadEmbeddedMap() {
 }
 
 function checkPowerBI() {
-  if (window.GeoBoost_Input_NL && Array.isArray(window.GeoBoost_Input_NL)) { connectPowerBI(window.GeoBoost_Input_NL); return true; } 
+  // if (window.GeoBoost_Input_NL && Array.isArray(window.GeoBoost_Input_NL)) { connectPowerBI(window.GeoBoost_Input_NL); return true; } 
+  const powerBIData =
+  window.GeoBoost_Input_NL ||
+  window.powerBIData ||
+  window.dataset ||
+  window.data;
+
+if (Array.isArray(powerBIData)) {
+  connectPowerBI(powerBIData);
+}
   try {
     if (window.name) {
       const data = JSON.parse(window.name);
@@ -346,7 +356,42 @@ window.connectPowerBI = function(dataArray) {
   document.getElementById('manualUploadBox').style.display = 'none';
   document.getElementById('pbiStatus').style.display = 'block';
   document.getElementById('pbiBadge').style.display = 'inline-block';
-  state.rawData = dataArray;
+  state.rawData = dataArray.map(r => {
+
+  const zipRaw = String(r["ZIP"] ||r["Zip"] || '');
+  const zip = zipRaw.substring(0,4).replace(/\D/g,'');
+
+  const bdr = String(r["M1 Name"] || r["M1 Full Name"]).trim();
+
+  let cleanDate = '';
+  const rawDate = r["date"];
+
+  if(typeof rawDate === "number"){
+    const excelEpoch = new Date(Date.UTC(1899, 11, 30));
+    const realDate = new Date(excelEpoch.getTime() + rawDate * 86400000);
+    cleanDate = realDate.toISOString().slice(0,10);
+  } else {
+    cleanDate = String(rawDate || '').split(" ")[0].trim();
+  }
+
+  return {
+    zip: zip,
+    bdr: bdr,
+    originalBdr: bdr,
+
+    poc: String(r["customer_erp_code"] || 'customer_erp_code_x').trim(),
+
+    lat: parseFloat(r["latitude"]) || 0,
+    lon: parseFloat(r["longitude"]) || 0,
+    seq: parseInt(r["visit_sequence"]) || 0,
+    // duration: parseFloat(r["Visit Duration"]) || parseFloat(["visit_duration"]) || 0,
+    duration: parseFloat(["visit_duration"]) || 0,
+    travelTime: parseFloat(r["travel_time_min"]) || 0,
+    distance: parseFloat(r["distance_km"]) || 0,
+    date: cleanDate
+  };
+}).filter(r => r.zip && r.bdr && r.poc);
+
   if(state.shapes) initColumns(); 
   setStatus(`Data Loaded (${dataArray.length} rows).`, "ok");
 };
@@ -431,6 +476,7 @@ document.getElementById('bdrCsv').onchange = async e => {
 
 const raw = r["date"];
 
+console.log("mathur",r);
 
 if(typeof raw === "number"){
   const excelEpoch = new Date(Date.UTC(1899, 11, 30));
@@ -448,12 +494,13 @@ else {
   bdr: bdr,
   originalBdr: bdr,
 
-  poc: String(r["customer_erp_code"] || 'customer_erp_code_x').trim(),
+  // poc: String(r["customer_erp_code_x"]).trim(),
+  poc: (r["customer_erp_code_x"] ?? r["customer_erp_code"] ?? 0).toString().trim(),
 
   lat: parseFloat(r["latitude"]) || 0,
   lon: parseFloat(r["longitude"]) || 0,
   seq: parseInt(r["visit_sequence"]) || 0,
-  duration: parseFloat(r["Visit Duration"]) || parseFloat(["visit_duration"]) || 0,
+  duration: (parseFloat(r["Visit Duration"] ?? r["visit_duration"]) || 0),
   travelTime: parseFloat(r["travel_time_min"]) || 0,
   distance: parseFloat(r["distance_km"]) || 0,
   date: cleanDate
@@ -738,13 +785,19 @@ function renderSummary(){
     grouped[key].totalDistance += r.distance || 0;
     grouped[key].actualTravelTime += r.travelTime || 0;
 
-
+    console.log("1",r.poc);
+    console.log("2",r.poc.toLowerCase());
+    
     if(r.poc && r.poc.toLowerCase() !== "home"){
       grouped[key].actualVisitTime += (r.duration || 0) * 60;
     }
 
     grouped[key].dateSet.add(r.date);
+
+    console.log("s",grouped[key].actualVisitTime)
   });
+
+
 
   const rows = Object.values(grouped).map(g => {
 
@@ -830,20 +883,20 @@ document.getElementById('btnClearFilter').onclick = () => {
   renderSummary();
 };
 
-document.getElementById('viewTabs').onclick = e => {
-  if(!e.target.dataset.view) return;
-  document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active')); e.target.classList.add('active');
-  state.currentView = e.target.dataset.view;
-  if(state.currentView === 'asIs'){ state.map.addLayer(state.layers.asIs); state.map.removeLayer(state.layers.optimized); }
-  else { state.map.addLayer(state.layers.optimized); state.map.removeLayer(state.layers.asIs); }
-  restyle(); renderSummary();
-};
+// document.getElementById('viewTabs').onclick = e => {
+//   if(!e.target.dataset.view) return;
+//   document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active')); e.target.classList.add('active');
+//   state.currentView = e.target.dataset.view;
+//   if(state.currentView === 'asIs'){ state.map.addLayer(state.layers.asIs); state.map.removeLayer(state.layers.optimized); }
+//   else { state.map.addLayer(state.layers.optimized); state.map.removeLayer(state.layers.asIs); }
+//   restyle(); renderSummary();
+// };
 
-document.getElementById('btnSeed').onclick = () => { 
-  state.assignments.optimized = new Map(state.assignments.asIs); 
-  restyle(); renderSummary(); 
-  History.push(); 
-};
+// document.getElementById('btnSeed').onclick = () => { 
+//   state.assignments.optimized = new Map(state.assignments.asIs); 
+//   restyle(); renderSummary(); 
+//   History.push(); 
+// };
 
 document.getElementById('btnExport').onclick = () => {
 
@@ -942,10 +995,10 @@ document.getElementById('btnExport').onclick = () => {
   document.body.removeChild(link);
 };
 
-document.getElementById('btnSaveProj').onclick=()=>{
-  const proj = { propKey: state.propKey, shapes: state.shapes, assignments: { asIs: [...state.assignments.asIs], optimized: [...state.assignments.optimized] } };
-  const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([JSON.stringify(proj)], {type:'application/json'})); a.download = 'project.json'; a.click();
-};
+// document.getElementById('btnSaveProj').onclick=()=>{
+//   const proj = { propKey: state.propKey, shapes: state.shapes, assignments: { asIs: [...state.assignments.asIs], optimized: [...state.assignments.optimized] } };
+//   const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([JSON.stringify(proj)], {type:'application/json'})); a.download = 'project.json'; a.click();
+// };
 
 function setStatus(msg, type){
   const el = document.getElementById('statusBox');
